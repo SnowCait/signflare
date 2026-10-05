@@ -17,4 +17,7 @@
       "storage": "sqlite",
     },
   },
+  "secrets": {
+    "required": ["MASTER_ENCRYPTION_KEY"],
+  },
 }
