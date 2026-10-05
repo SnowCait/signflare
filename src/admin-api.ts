@@ -11,6 +11,7 @@ import {
   isAdminSessionToken,
 } from './admin-sessions';
 import { parseAdminPubkey } from './config';
+import type { IdentityMetadata } from './identities';
 import {
   Nip98AuthError,
   nip98EventExpiresAt,
@@ -21,6 +22,12 @@ import { getSignerHub } from './signer-hub';
 
 // Login needs no body. Anything larger is rejected before it is hashed.
 export const MAX_LOGIN_BODY_BYTES = 8 * 1024;
+
+// A registration body holds a single private key and fits well within this.
+// Anything larger is rejected before it is parsed.
+export const MAX_IDENTITY_BODY_BYTES = 1024;
+
+const PUBKEY = /^[0-9a-f]{64}$/;
 
 // Sent as `__Secure-signflare_admin_session`; browsers only accept the prefix
 // on cookies set with Secure from a secure origin.
@@ -158,9 +165,85 @@ adminApi.post('/logout', requireAdminSession, async (c) => {
   return c.body(null, 204);
 });
 
+adminApi.get('/identities', requireAdminSession, async (c) => {
+  const identities = await getSignerHub(c.env).listIdentities();
+  return c.json(identities.map(identityResponse));
+});
+
+adminApi.post('/identities', requireAdminSession, async (c) => {
+  const body = await readBody(c.req.raw, MAX_IDENTITY_BODY_BYTES);
+  if (body === null) {
+    return errorResponse(c, 413, 'payload too large');
+  }
+  const privateKey = parsePrivateKeyRequest(body);
+  if (privateKey === null) {
+    return errorResponse(c, 400, 'invalid request');
+  }
+  const result = await getSignerHub(c.env).registerIdentity(
+    privateKey,
+    unixNow(),
+  );
+  switch (result.status) {
+    case 'created':
+      return c.json(identityResponse(result.identity), 201);
+    case 'invalid_private_key':
+      return errorResponse(c, 400, 'invalid private key');
+    case 'duplicate':
+      return errorResponse(c, 409, 'identity already exists');
+    case 'storage_full':
+      console.error('Identity registration failed: storage is full');
+      return errorResponse(c, 507, 'insufficient storage');
+    case 'configuration_error':
+      console.error(
+        'MASTER_ENCRYPTION_KEY must be set to a secret of at least 32 bytes',
+      );
+      return errorResponse(c, 500, 'server configuration error');
+  }
+});
+
+adminApi.delete('/identities/:pubkey', requireAdminSession, async (c) => {
+  const pubkey = c.req.param('pubkey');
+  if (!PUBKEY.test(pubkey)) {
+    return errorResponse(c, 400, 'invalid pubkey');
+  }
+  if (!(await getSignerHub(c.env).deleteIdentity(pubkey))) {
+    return errorResponse(c, 404, 'not found');
+  }
+  return c.body(null, 204);
+});
+
 // Never includes the session token.
 function sessionResponse(session: AdminSession) {
   return { pubkey: session.adminPubkey, expiresAt: session.expiresAt };
+}
+
+// Public identity information only (docs/design.md §30.5, §30.6).
+function identityResponse(identity: IdentityMetadata) {
+  return {
+    pubkey: identity.pubkey,
+    npub: identity.npub,
+    createdAt: identity.createdAt,
+    updatedAt: identity.updatedAt,
+  };
+}
+
+// Returns the privateKey string of a {"privateKey": ...} body, or null for
+// any other body. The key itself is validated by the SignerHub. Parser
+// messages can quote the input, so they are discarded.
+function parsePrivateKeyRequest(body: Uint8Array): string | null {
+  let request: unknown;
+  try {
+    request = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body),
+    );
+  } catch {
+    return null;
+  }
+  if (typeof request !== 'object' || request === null) {
+    return null;
+  }
+  const { privateKey } = request as { privateKey?: unknown };
+  return typeof privateKey === 'string' ? privateKey : null;
 }
 
 function errorResponse(
