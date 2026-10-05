@@ -3,9 +3,6 @@
   "name": "signflare",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
-  "vars": {
-    "ADMIN_PUBKEY": "",
-  },
   "durable_objects": {
     "bindings": [
       {

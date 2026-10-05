@@ -33,8 +33,14 @@ const ADMIN_SESSION_COOKIE_OPTIONS = {
   sameSite: 'Strict',
 } as const satisfies CookieOptions;
 
+// ADMIN_PUBKEY is set per deployment and not declared in wrangler.jsonc, so
+// the generated Env lacks it and it may be missing at runtime.
+export type AdminBindings = Env & {
+  ADMIN_PUBKEY?: string;
+};
+
 type AdminApiEnv = {
-  Bindings: Env;
+  Bindings: AdminBindings;
   Variables: {
     adminPubkey: string;
     adminSession: AdminSession;

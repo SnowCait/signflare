@@ -4,7 +4,7 @@ import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_LOGIN_BODY_BYTES } from '../src/admin-api';
+import { type AdminBindings, MAX_LOGIN_BODY_BYTES } from '../src/admin-api';
 import app from '../src/index';
 import type { SignerHub } from '../src/signer-hub';
 import {
@@ -29,7 +29,7 @@ const admin = randomKey();
 const other = randomKey();
 
 interface Deployment {
-  readonly env: Env;
+  readonly env: AdminBindings;
   readonly hub: DurableObjectStub<SignerHub>;
   readonly hubNames: string[];
 }
@@ -58,9 +58,9 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
 
 function unconfiguredDeployment(): Deployment {
   const d = deployment();
-  const unconfigured: Partial<Env> = { ...d.env };
+  const unconfigured: AdminBindings = { ...d.env };
   delete unconfigured.ADMIN_PUBKEY;
-  return { ...d, env: unconfigured as Env };
+  return { ...d, env: unconfigured };
 }
 
 function withAdminPubkey(d: Deployment, adminPubkey: string): Deployment {
@@ -79,7 +79,7 @@ interface RequestOptions {
 }
 
 async function send(
-  testEnv: Env,
+  testEnv: AdminBindings,
   url: string,
   options: RequestOptions = {},
 ): Promise<Response> {
@@ -980,6 +980,7 @@ describe('ADMIN_PUBKEY configuration', () => {
 
   it('is not configured by the repository', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(env).not.toHaveProperty('ADMIN_PUBKEY');
     const response = await exports.default.fetch(SESSION_URL);
     await expectError(response, 500, 'server configuration error');
     const login = await exports.default.fetch(LOGIN_URL, {
