@@ -2,7 +2,10 @@ import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 import gitignore from '../.gitignore?raw';
 import wranglerConfig from '../wrangler.jsonc?raw';
-import { parseMasterEncryptionKey } from '../src/config';
+import {
+  parseMasterEncryptionKey,
+  type SignflareBindings,
+} from '../src/config';
 
 // Test-only values. None of them is a real secret.
 const ASCII_32 = 'test-only master key: 32 bytes!!';
@@ -23,29 +26,39 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('MASTER_ENCRYPTION_KEY declaration', () => {
-  it('is declared by name in secrets.required', () => {
-    const config = parseJsonc(wranglerConfig) as {
-      secrets?: { required?: unknown };
-    };
-    expect(config.secrets?.required).toEqual(['MASTER_ENCRYPTION_KEY']);
+describe('deployment configuration', () => {
+  it('declares no required secrets in wrangler.jsonc', () => {
+    // With secrets.required set, local development loads only the listed keys
+    // from .dev.vars and .env, so ADMIN_PUBKEY and MASTER_ENCRYPTION_KEY could
+    // no longer be configured there together.
+    const config = parseJsonc(wranglerConfig) as Record<string, unknown>;
+    expect(config).not.toHaveProperty('secrets');
   });
 
-  it('has no value in the repository', () => {
-    const config = parseJsonc(wranglerConfig) as { vars?: unknown };
-    expect(config.vars).toBeUndefined();
-    // The required list is the only place the name appears.
-    expect(wranglerConfig.match(/MASTER_ENCRYPTION_KEY/g)).toHaveLength(1);
+  it('keeps configuration values out of the repository', () => {
+    const config = parseJsonc(wranglerConfig) as Record<string, unknown>;
+    expect(config).not.toHaveProperty('vars');
+    expect(wranglerConfig).not.toContain('MASTER_ENCRYPTION_KEY');
+    expect(wranglerConfig).not.toContain('ADMIN_PUBKEY');
     // Local values belong in .dev.vars or .env, which are never committed.
     const ignored = gitignore.split('\n');
     expect(ignored).toContain('.dev.vars*');
     expect(ignored).toContain('.env*');
   });
 
-  it('is typed as a string binding in the generated Env', () => {
-    expectTypeOf<Env>()
+  it('types ADMIN_PUBKEY and MASTER_ENCRYPTION_KEY as optional bindings', () => {
+    expectTypeOf<SignflareBindings>()
+      .toHaveProperty('ADMIN_PUBKEY')
+      .toEqualTypeOf<string | undefined>();
+    expectTypeOf<SignflareBindings>()
       .toHaveProperty('MASTER_ENCRYPTION_KEY')
-      .toEqualTypeOf<string>();
+      .toEqualTypeOf<string | undefined>();
+    expectTypeOf<SignflareBindings>().toExtend<Env>();
+    expectTypeOf<{
+      ADMIN_PUBKEY: string;
+      MASTER_ENCRYPTION_KEY: string;
+      SIGNER_HUB: Env['SIGNER_HUB'];
+    }>().toExtend<SignflareBindings>();
   });
 });
 

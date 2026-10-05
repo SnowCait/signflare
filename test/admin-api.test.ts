@@ -5,10 +5,10 @@ import type { NostrEvent } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  type AdminBindings,
   MAX_IDENTITY_BODY_BYTES,
   MAX_LOGIN_BODY_BYTES,
 } from '../src/admin-api';
+import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
 import { withDecryptedPrivateKey } from '../src/private-key-encryption';
 import type { SignerHub } from '../src/signer-hub';
@@ -57,7 +57,7 @@ const admin = randomKey();
 const other = randomKey();
 
 interface Deployment {
-  readonly env: AdminBindings;
+  readonly env: SignflareBindings;
   readonly hub: DurableObjectStub<SignerHub>;
   readonly hubNames: string[];
 }
@@ -86,7 +86,7 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
 
 function unconfiguredDeployment(): Deployment {
   const d = deployment();
-  const unconfigured: AdminBindings = { ...d.env };
+  const unconfigured: SignflareBindings = { ...d.env };
   delete unconfigured.ADMIN_PUBKEY;
   return { ...d, env: unconfigured };
 }
@@ -107,7 +107,7 @@ interface RequestOptions {
 }
 
 async function send(
-  testEnv: AdminBindings,
+  testEnv: SignflareBindings,
   url: string,
   options: RequestOptions = {},
 ): Promise<Response> {
