@@ -14,6 +14,13 @@ import {
 } from '../src/identities';
 import { InvalidPrivateKeyError } from '../src/private-key';
 import { withDecryptedPrivateKey } from '../src/private-key-encryption';
+import type { SignerHub } from '../src/signer-hub';
+import {
+  addIdentity,
+  instrumentedStorage,
+  SQLITE_FULL_MESSAGE,
+} from './hub-helpers';
+import { randomKey } from './nostr-helpers';
 
 // Test-only fixtures: trivially guessable scalars that must never hold funds or identity.
 const SECRET_ONE_HEX = `${'00'.repeat(31)}01`;
@@ -315,7 +322,7 @@ describe('deleteIdentity', () => {
       await registerIdentity(sql, randomMasterKey(), SECRET_ONE_HEX, NOW);
       await registerIdentity(sql, randomMasterKey(), SECRET_THREE_HEX, NOW);
 
-      expect(deleteIdentity(sql, PUBKEY_ONE)).toBe(true);
+      expect(deleteIdentity(state.storage, PUBKEY_ONE)).toBe(true);
 
       expect(getIdentity(sql, PUBKEY_ONE)).toBeNull();
       expect(identityExists(sql, PUBKEY_ONE)).toBe(false);
@@ -328,7 +335,7 @@ describe('deleteIdentity', () => {
 
   it('reports when there was nothing to delete', async () => {
     await runInDurableObject(freshHub(), (_instance, state) => {
-      expect(deleteIdentity(state.storage.sql, PUBKEY_ONE)).toBe(false);
+      expect(deleteIdentity(state.storage, PUBKEY_ONE)).toBe(false);
     });
   });
 
@@ -336,7 +343,7 @@ describe('deleteIdentity', () => {
     await runInDurableObject(freshHub(), async (_instance, state) => {
       const { sql } = state.storage;
       await registerIdentity(sql, randomMasterKey(), SECRET_ONE_HEX, NOW);
-      deleteIdentity(sql, PUBKEY_ONE);
+      deleteIdentity(state.storage, PUBKEY_ONE);
       const identity = await registerIdentity(
         sql,
         randomMasterKey(),
@@ -345,5 +352,185 @@ describe('deleteIdentity', () => {
       );
       expect(identity.createdAt).toBe(NOW + 1);
     });
+  });
+});
+
+describe('identity deletion cascade', () => {
+  type Hub = DurableObjectStub<SignerHub>;
+
+  async function pair(hub: Hub, identity: string): Promise<string> {
+    const result = await hub.createPairing(identity, 'all', NOW);
+    if (result.status !== 'created') {
+      throw new Error(result.status);
+    }
+    return result.secret;
+  }
+
+  async function connect(hub: Hub, identity: string): Promise<string> {
+    const result = await hub.establishSession({
+      secret: await pair(hub, identity),
+      clientPubkey: randomKey().pubkey,
+      now: NOW + 1,
+    });
+    if (result.status !== 'created') {
+      throw new Error(result.status);
+    }
+    return result.session.clientPubkey;
+  }
+
+  // Two sessions and two unused pairings for the identity to delete, and one
+  // of each for another identity.
+  async function populated() {
+    const hub = freshHub();
+    const target = await addIdentity(hub);
+    const other = await addIdentity(hub);
+    return {
+      hub,
+      target,
+      other,
+      targetClients: [await connect(hub, target), await connect(hub, target)],
+      targetSecrets: [await pair(hub, target), await pair(hub, target)],
+      otherClient: await connect(hub, other),
+      otherSecret: await pair(hub, other),
+    };
+  }
+
+  function rowCounts(sql: SqlStorage, pubkey: string) {
+    const count = (query: string) =>
+      sql.exec<{ count: number }>(query, pubkey).one().count;
+    return {
+      identities: count(
+        'SELECT COUNT(*) AS count FROM identities WHERE pubkey = ?',
+      ),
+      pairings: count(
+        'SELECT COUNT(*) AS count FROM pairings WHERE identity_pubkey = ?',
+      ),
+      sessions: count(
+        'SELECT COUNT(*) AS count FROM sessions WHERE identity_pubkey = ?',
+      ),
+    };
+  }
+
+  function counts(hub: Hub, ...pubkeys: string[]) {
+    return runInDurableObject(hub, (_instance, state) =>
+      pubkeys.map((pubkey) => rowCounts(state.storage.sql, pubkey)),
+    );
+  }
+
+  it('removes the identity with its sessions and pairings', async () => {
+    const { hub, target, other } = await populated();
+    expect(await counts(hub, target, other)).toEqual([
+      { identities: 1, pairings: 2, sessions: 2 },
+      { identities: 1, pairings: 1, sessions: 1 },
+    ]);
+
+    expect(await hub.deleteIdentity(target)).toBe(true);
+
+    expect(await counts(hub, target, other)).toEqual([
+      { identities: 0, pairings: 0, sessions: 0 },
+      { identities: 1, pairings: 1, sessions: 1 },
+    ]);
+  });
+
+  it('leaves no session or pairing secret of the identity usable', async () => {
+    const { hub, target, targetClients, targetSecrets } = await populated();
+    await hub.deleteIdentity(target);
+
+    for (const clientPubkey of targetClients) {
+      expect(await hub.getSession(clientPubkey)).toBeNull();
+      expect(await hub.touchSession(clientPubkey, NOW + 2)).toBe(false);
+    }
+    expect(await hub.listSessions(target)).toEqual([]);
+    for (const secret of targetSecrets) {
+      expect(
+        await hub.establishSession({
+          secret,
+          clientPubkey: randomKey().pubkey,
+          now: NOW + 2,
+        }),
+      ).toEqual({ status: 'invalid_secret' });
+    }
+    expect(await hub.createPairing(target, 'all', NOW + 2)).toEqual({
+      status: 'identity_not_found',
+    });
+  });
+
+  it('keeps the sessions and pairings of other identities', async () => {
+    const { hub, target, other, otherClient, otherSecret } = await populated();
+    const session = await hub.getSession(otherClient);
+    await hub.deleteIdentity(target);
+
+    expect(await hub.getSession(otherClient)).toEqual(session);
+    expect(await hub.listSessions(other)).toEqual([session]);
+    expect(
+      await hub.establishSession({
+        secret: otherSecret,
+        clientPubkey: randomKey().pubkey,
+        now: NOW + 2,
+      }),
+    ).toMatchObject({ status: 'created', session: { identityPubkey: other } });
+  });
+
+  it('reports false for an unknown identity and changes nothing', async () => {
+    const { hub, target, other } = await populated();
+    const before = await counts(hub, target, other);
+    expect(await hub.deleteIdentity(randomKey().pubkey)).toBe(false);
+    expect(await counts(hub, target, other)).toEqual(before);
+
+    expect(await hub.deleteIdentity(target)).toBe(true);
+    expect(await hub.deleteIdentity(target)).toBe(false);
+  });
+
+  it('deletes sessions, then pairings, then the identity', async () => {
+    const { hub, target } = await populated();
+    await runInDurableObject(hub, (_instance, state) => {
+      const statements: string[] = [];
+      const storage = instrumentedStorage(state.storage, { statements });
+      expect(deleteIdentity(storage, target)).toBe(true);
+      expect(statements).toEqual([
+        'DELETE FROM sessions WHERE identity_pubkey = ?',
+        'DELETE FROM pairings WHERE identity_pubkey = ?',
+        'DELETE FROM identities WHERE pubkey = ? RETURNING pubkey',
+      ]);
+    });
+  });
+
+  it.each([
+    ['sessions', /DELETE FROM sessions/],
+    ['pairings', /DELETE FROM pairings/],
+    ['the identity', /DELETE FROM identities/],
+  ])('rolls everything back when deleting %s fails', async (_case, failing) => {
+    const { hub, target, targetClients } = await populated();
+    const before = await counts(hub, target);
+    await runInDurableObject(hub, (_instance, state) => {
+      const storage = instrumentedStorage(state.storage, {
+        failing,
+        message: 'unexpected',
+      });
+      expect(() => deleteIdentity(storage, target)).toThrow('unexpected');
+    });
+    expect(await counts(hub, target)).toEqual(before);
+    expect(await hub.getSession(targetClients[0])).not.toBeNull();
+  });
+
+  it('needs no writes other than deletes, so it works on full storage', async () => {
+    const { hub, target, other } = await populated();
+    await runInDurableObject(hub, (_instance, state) => {
+      const statements: string[] = [];
+      const storage = instrumentedStorage(state.storage, {
+        failing: /^\s*(INSERT|UPDATE|REPLACE|UPSERT|CREATE|ALTER)\b/i,
+        message: SQLITE_FULL_MESSAGE,
+        statements,
+      });
+      expect(deleteIdentity(storage, target)).toBe(true);
+      expect(statements.length).toBeGreaterThan(0);
+      for (const statement of statements) {
+        expect(statement).toMatch(/^DELETE FROM /);
+      }
+    });
+    expect(await counts(hub, target, other)).toEqual([
+      { identities: 0, pairings: 0, sessions: 0 },
+      { identities: 1, pairings: 1, sessions: 1 },
+    ]);
   });
 });

@@ -234,9 +234,12 @@ describe('createPairing', () => {
   it('refuses identities that do not exist', async () => {
     const hub = freshHub();
     const identity = await addIdentity(hub);
+    const deleted = await addIdentity(hub);
+    expect(await hub.deleteIdentity(deleted)).toBe(true);
 
     for (const pubkey of [
       randomKey().pubkey,
+      deleted,
       identity.toUpperCase(),
       identity.slice(2),
       '',

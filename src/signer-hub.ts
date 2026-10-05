@@ -5,6 +5,7 @@ import type {
   AdminLoginResult,
   AdminSession,
 } from './admin-sessions';
+import * as identities from './identities';
 import { migrate } from './migrations';
 import * as pairings from './pairings';
 import type { CreatePairingResult, PairingPermissionsInput } from './pairings';
@@ -50,6 +51,10 @@ export class SignerHub extends DurableObject<Env> {
 
   deleteAdminSession(tokenHash: Uint8Array): boolean {
     return adminSessions.deleteAdminSession(this.ctx.storage.sql, tokenHash);
+  }
+
+  deleteIdentity(pubkey: string): boolean {
+    return identities.deleteIdentity(this.ctx.storage, pubkey);
   }
 
   // The only method whose result contains a raw pairing secret.

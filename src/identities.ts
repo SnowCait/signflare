@@ -163,15 +163,28 @@ export function getIdentity(
   };
 }
 
-// Removes only the identity row. Sessions and pairings for the identity must
-// also be removed in the same transaction once those tables exist
-// (docs/design.md §12).
-export function deleteIdentity(sql: SqlStorage, pubkey: string): boolean {
-  return (
-    sql
-      .exec('DELETE FROM identities WHERE pubkey = ? RETURNING pubkey', pubkey)
-      .toArray().length > 0
-  );
+// Removes the identity's sessions, its pairings, and the identity row, in that
+// order and in one transaction (docs/design.md §12). Only DELETE statements
+// are used, so deletion keeps working when storage is full (§32).
+//
+// Returns false if there was no such identity.
+export function deleteIdentity(
+  storage: DurableObjectStorage,
+  pubkey: string,
+): boolean {
+  const { sql } = storage;
+  return storage.transactionSync(() => {
+    sql.exec('DELETE FROM sessions WHERE identity_pubkey = ?', pubkey);
+    sql.exec('DELETE FROM pairings WHERE identity_pubkey = ?', pubkey);
+    return (
+      sql
+        .exec(
+          'DELETE FROM identities WHERE pubkey = ? RETURNING pubkey',
+          pubkey,
+        )
+        .toArray().length > 0
+    );
+  });
 }
 
 export function toIdentityMetadata(
