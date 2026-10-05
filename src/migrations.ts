@@ -20,6 +20,22 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 2,
+    sql: `
+      CREATE TABLE admin_sessions (
+        token_hash BLOB PRIMARY KEY,
+        admin_pubkey TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE admin_auth_events (
+        event_id TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL
+      );
+    `,
+  },
 ];
 
 // Durable Object SQLite does not support PRAGMA user_version, so applied
