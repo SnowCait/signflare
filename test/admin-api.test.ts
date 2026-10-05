@@ -1,15 +1,22 @@
 import { env, exports } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
+import {
+  BUNKER_REGEX,
+  type BunkerPointer,
+  parseBunkerInput,
+} from 'nostr-tools/nip46';
 import type { NostrEvent } from 'nostr-tools/pure';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MAX_IDENTITY_BODY_BYTES,
   MAX_LOGIN_BODY_BYTES,
+  MAX_PAIRING_BODY_BYTES,
 } from '../src/admin-api';
 import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
+import type { CreatePairingResult } from '../src/pairings';
 import { withDecryptedPrivateKey } from '../src/private-key-encryption';
 import type { SignerHub } from '../src/signer-hub';
 import {
@@ -52,9 +59,15 @@ const PUBKEY_ONE =
 const SECRET_THREE_HEX = `${'00'.repeat(31)}03`;
 const PUBKEY_THREE =
   'f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9';
+const CURVE_ORDER_HEX =
+  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141';
 
 const admin = randomKey();
 const other = randomKey();
+// Test-only REMOTE_SIGNER_PRIVATE_KEY, generated for this run. As in a
+// deployment, it is distinct from every registered identity.
+const remoteSigner = randomKey();
+const REMOTE_SIGNER_NSEC = nsecEncode(remoteSigner.secretKey);
 
 interface Deployment {
   readonly env: SignflareBindings;
@@ -64,6 +77,8 @@ interface Deployment {
 
 // Each test gets its own SignerHub, reached through whatever name the Worker
 // asks for. The names are recorded so tests can check which one it used.
+// REMOTE_SIGNER_PRIVATE_KEY is set to the test-only key rather than to
+// anything from the local environment.
 function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
   const hub = env.SIGNER_HUB.getByName(crypto.randomUUID());
   const hubNames: string[] = [];
@@ -77,6 +92,7 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
     env: {
       ...env,
       ADMIN_PUBKEY: adminPubkey as string,
+      REMOTE_SIGNER_PRIVATE_KEY: REMOTE_SIGNER_NSEC,
       SIGNER_HUB: namespace as unknown as Env['SIGNER_HUB'],
     },
     hub,
@@ -364,6 +380,14 @@ const MASTER_KEY_FORMS = [
   encodeBase64(utf8(TEST_MASTER_ENCRYPTION_KEY)),
 ];
 
+const REMOTE_SIGNER_KEY_FORMS = privateKeyForms(remoteSigner.secretKey);
+
+// Connection material: allowed only inside a pairing's bunkerUrl.
+const REMOTE_SIGNER_PUBKEY_FORMS = [
+  remoteSigner.pubkey,
+  npubEncode(remoteSigner.pubkey),
+];
+
 function envelopeForms(row: IdentityRow): string[] {
   return [row.encrypted_private_key, row.iv, row.kdf_salt].flatMap((value) => {
     const bytes = new Uint8Array(value);
@@ -482,6 +506,144 @@ function withSignerHub(
 
 function tamperNsec(nsec: string): string {
   return `${nsec.slice(0, -1)}${nsec.endsWith('q') ? 'p' : 'q'}`;
+}
+
+// The relay URL of every request sent to ORIGIN.
+const RELAY_URL = 'wss://signflare.example/';
+
+// What "all" expands to.
+const ALL_EXPANDED = [
+  'sign_event',
+  'nip04_encrypt',
+  'nip04_decrypt',
+  'nip44_encrypt',
+  'nip44_decrypt',
+];
+
+const REMOTE_SIGNER_CONFIGURATION_LOG =
+  'REMOTE_SIGNER_PRIVATE_KEY must be set to an nsec or a 64-character hex private key';
+
+function pairingsUrl(identity: string, origin = ORIGIN): string {
+  return `${origin}/admin/api/identities/${identity}/pairings`;
+}
+
+function pairingRequest(permissions: unknown): string {
+  return JSON.stringify({ permissions });
+}
+
+function postPairing(
+  d: Deployment,
+  identity: string,
+  token: string | undefined,
+  body: BodyInit = pairingRequest('all'),
+  options: RequestOptions & { url?: string } = {},
+): Promise<Response> {
+  return send(d.env, options.url ?? pairingsUrl(identity), {
+    method: 'POST',
+    token,
+    body,
+    headers: { 'Content-Type': 'application/json' },
+    ...options,
+  });
+}
+
+// undefined removes the secret.
+function withRemoteSignerPrivateKey(d: Deployment, value: unknown): Deployment {
+  const configured: SignflareBindings = {
+    ...d.env,
+    REMOTE_SIGNER_PRIVATE_KEY: value as string,
+  };
+  if (value === undefined) {
+    delete configured.REMOTE_SIGNER_PRIVATE_KEY;
+  }
+  return { ...d, env: configured };
+}
+
+// A signed-in deployment with one registered identity to pair.
+async function withIdentity() {
+  const { d, token } = await signedIn();
+  const identityKey = randomKey();
+  await register(d, token, bytesToHex(identityKey.secretKey));
+  return { d, token, identity: identityKey.pubkey, identityKey };
+}
+
+interface CreatedPairing {
+  readonly text: string;
+  readonly bunkerUrl: string;
+  readonly expiresAt: number;
+  // The connection token as the nostr-tools NIP-46 client reads it.
+  readonly pointer: BunkerPointer & { secret: string };
+}
+
+async function createdPairing(response: Response): Promise<CreatedPairing> {
+  expect(response.status).toBe(201);
+  const text = await response.text();
+  const body = JSON.parse(text);
+  expect(Object.keys(body).sort()).toEqual(['bunkerUrl', 'expiresAt']);
+  expect(body.bunkerUrl).toMatch(BUNKER_REGEX);
+  const pointer = await parseBunkerInput(body.bunkerUrl);
+  expect(pointer?.secret).toMatch(/^[0-9a-f]{64}$/);
+  return {
+    text,
+    bunkerUrl: body.bunkerUrl,
+    expiresAt: body.expiresAt,
+    pointer: pointer as CreatedPairing['pointer'],
+  };
+}
+
+type PairingRow = {
+  id: string;
+  identity_pubkey: string;
+  secret_hash: ArrayBuffer;
+  permissions: string;
+  expires_at: number;
+  created_at: number;
+};
+
+function pairingRows(hub: DurableObjectStub<SignerHub>): Promise<PairingRow[]> {
+  return runInDurableObject(hub, (_instance, state) =>
+    state.storage.sql
+      .exec<PairingRow>('SELECT * FROM pairings ORDER BY created_at, id')
+      .toArray(),
+  );
+}
+
+// A deployment whose SignerHub stub records each RPC call and the result of
+// each createPairing call.
+function recordingPairings(d: Deployment) {
+  const calls: [string, unknown[]][] = [];
+  const results: CreatePairingResult[] = [];
+  const rpc = d.hub as unknown as Record<
+    string,
+    (...args: unknown[]) => Promise<CreatePairingResult>
+  >;
+  const recorded = withSignerHub(
+    d,
+    stubNamespace(d.hub, {
+      calls,
+      overrides: {
+        createPairing: async (...args) => {
+          const result = await rpc.createPairing(...args);
+          results.push(result);
+          return result;
+        },
+      },
+    }),
+  );
+  return { d: recorded, calls, results };
+}
+
+function expectNoSecretIn(
+  response: Response,
+  text: string,
+  secrets: readonly string[],
+): void {
+  for (const secret of secrets) {
+    expect(text).not.toContain(secret);
+    for (const [, value] of response.headers) {
+      expect(value).not.toContain(secret);
+    }
+  }
 }
 
 afterEach(() => {
@@ -1974,7 +2136,7 @@ describe('identity management on full storage', () => {
   });
 });
 
-describe('identity endpoint protection', () => {
+describe('identity and pairing endpoint protection', () => {
   type IdentityRequest = (
     d: Deployment,
     token: string | undefined,
@@ -1995,10 +2157,16 @@ describe('identity endpoint protection', () => {
       'DELETE /admin/api/identities/:pubkey',
       (d, token, options) => deleteIdentity(d, PUBKEY_THREE, token, options),
     ],
+    [
+      'POST /admin/api/identities/:pubkey/pairings',
+      (d, token, options) =>
+        postPairing(d, PUBKEY_THREE, token, pairingRequest('all'), options),
+    ],
   ];
   const stateChanging = endpoints.slice(1);
 
-  // One identity that rejected requests must neither remove nor add to.
+  // One identity that rejected requests must neither remove nor add to, and
+  // no pairing, which they must not create.
   async function guarded() {
     const { d, token } = await signedIn();
     await register(d, token, SECRET_THREE_HEX);
@@ -2009,6 +2177,7 @@ describe('identity endpoint protection', () => {
     expect((await identityRows(d.hub)).map(({ pubkey }) => pubkey)).toEqual([
       PUBKEY_THREE,
     ]);
+    expect(await pairingRows(d.hub)).toEqual([]);
   }
 
   it.each(endpoints)(
@@ -2283,4 +2452,916 @@ describe('identity endpoint errors', () => {
       expectSafeLogs(log, [detail, ...MASTER_KEY_FORMS, token]);
     },
   );
+});
+
+describe('POST /admin/api/identities/:pubkey/pairings', () => {
+  it('creates a pairing and returns its connection token', async () => {
+    setNow(T0);
+    const { d, token, identity } = await withIdentity();
+    const response = await postPairing(d, identity, token);
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Content-Type')).toMatch(/^application\/json/);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    const { bunkerUrl, expiresAt, pointer } = await createdPairing(response);
+    expect(bunkerUrl).toBe(
+      `bunker://${remoteSigner.pubkey}?relay=wss%3A%2F%2Fsignflare.example%2F&secret=${pointer.secret}`,
+    );
+    expect(expiresAt).toBe(T0 + 10 * 60);
+  });
+
+  it('expires the pairing exactly 10 minutes after creation', async () => {
+    setNow(T0);
+    const { d, token, identity } = await withIdentity();
+    const { expiresAt } = await createdPairing(
+      await postPairing(d, identity, token),
+    );
+
+    expect(expiresAt).toBe(T0 + 10 * 60);
+    expect(await pairingRows(d.hub)).toEqual([
+      {
+        id: expect.any(String),
+        identity_pubkey: identity,
+        secret_hash: expect.any(ArrayBuffer),
+        permissions: JSON.stringify(ALL_EXPANDED),
+        created_at: T0,
+        expires_at: T0 + 10 * 60,
+      },
+    ]);
+  });
+
+  it.each<[string, unknown, string[]]>([
+    ['"all"', 'all', ALL_EXPANDED],
+    [
+      'explicit permissions',
+      ['sign_event:1', 'nip44_encrypt', 'nip44_decrypt'],
+      ['sign_event:1', 'nip44_encrypt', 'nip44_decrypt'],
+    ],
+    [
+      'unordered permissions with duplicates',
+      ['nip44_decrypt', 'sign_event:7', 'sign_event:1', 'nip44_decrypt'],
+      ['sign_event:1', 'sign_event:7', 'nip44_decrypt'],
+    ],
+    [
+      'sign_event with a kind it covers',
+      ['sign_event:1', 'sign_event'],
+      ['sign_event'],
+    ],
+    ['"all" in a list', ['nip04_encrypt', 'all'], ALL_EXPANDED],
+    ['an empty list', [], []],
+  ])(
+    'grants %s as the pairing domain model does',
+    async (_case, permissions, expected) => {
+      const { d, token, identity } = await withIdentity();
+      await createdPairing(
+        await postPairing(d, identity, token, pairingRequest(permissions)),
+      );
+
+      const [row, ...rest] = await pairingRows(d.hub);
+      expect(rest).toEqual([]);
+      expect(row.identity_pubkey).toBe(identity);
+      expect(row.permissions).toBe(JSON.stringify(expected));
+    },
+  );
+
+  it('does not return the pairing id', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { text } = await createdPairing(
+      await postPairing(d, identity, token),
+    );
+    const [row] = await pairingRows(d.hub);
+    expect(text).not.toContain(row.id);
+  });
+
+  it.each<[string, string, string]>([
+    ['an nsec', REMOTE_SIGNER_NSEC, remoteSigner.pubkey],
+    [
+      '64-character hex',
+      bytesToHex(remoteSigner.secretKey),
+      remoteSigner.pubkey,
+    ],
+    [
+      'uppercase hex',
+      bytesToHex(remoteSigner.secretKey).toUpperCase(),
+      remoteSigner.pubkey,
+    ],
+    [
+      'an nsec surrounded by whitespace',
+      ` ${REMOTE_SIGNER_NSEC}\n`,
+      remoteSigner.pubkey,
+    ],
+    ['a known test vector', SECRET_THREE_HEX, PUBKEY_THREE],
+  ])(
+    'derives the remote-signer pubkey from %s',
+    async (_case, value, pubkey) => {
+      const { d, token, identity } = await withIdentity();
+      const { pointer } = await createdPairing(
+        await postPairing(
+          withRemoteSignerPrivateKey(d, value),
+          identity,
+          token,
+        ),
+      );
+      expect(pointer.pubkey).toBe(pubkey);
+      expect(pointer.pubkey).not.toBe(identity);
+    },
+  );
+
+  it('gives each pairing its own secret', async () => {
+    const { d, token, identity } = await withIdentity();
+    const pairings = await Promise.all(
+      Array.from({ length: 4 }, async () =>
+        createdPairing(await postPairing(d, identity, token)),
+      ),
+    );
+
+    expect(new Set(pairings.map(({ pointer }) => pointer.secret)).size).toBe(4);
+    for (const { pointer } of pairings) {
+      expect(pointer.pubkey).toBe(remoteSigner.pubkey);
+      expect(pointer.relays).toEqual([RELAY_URL]);
+    }
+    expect(await pairingRows(d.hub)).toHaveLength(4);
+  });
+
+  it('takes no connection material from the request body', async () => {
+    const { d, token, identity } = await withIdentity();
+    const forged = 'ab'.repeat(32);
+    const body = JSON.stringify({
+      permissions: 'all',
+      relay: 'wss://evil.example/',
+      relays: ['wss://evil.example/'],
+      secret: forged,
+      pubkey: other.pubkey,
+      remoteSignerPubkey: other.pubkey,
+      bunkerUrl: `bunker://${other.pubkey}?relay=wss%3A%2F%2Fevil.example%2F&secret=${forged}`,
+      expiresAt: 0,
+    });
+    const { pointer } = await createdPairing(
+      await postPairing(d, identity, token, body),
+    );
+
+    expect(pointer).toEqual({
+      pubkey: remoteSigner.pubkey,
+      relays: [RELAY_URL],
+      secret: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(pointer.secret).not.toBe(forged);
+  });
+
+  it('does not treat the remote-signer key as an identity', async () => {
+    const { d, token, identity } = await withIdentity();
+    const before = await identityRows(d.hub);
+    await createdPairing(await postPairing(d, identity, token));
+    expect(await identityRows(d.hub)).toEqual(before);
+    await expectError(
+      await postPairing(d, remoteSigner.pubkey, token),
+      404,
+      'not found',
+    );
+  });
+
+  it('is the only endpoint that needs REMOTE_SIGNER_PRIVATE_KEY', async () => {
+    const { d, token } = await signedIn();
+    const unconfigured = withRemoteSignerPrivateKey(d, undefined);
+    const key = randomKey();
+    const responses = [
+      await postLogin(unconfigured, uniqueLoginEvent(admin)),
+      await getSession(unconfigured, token),
+      await postIdentity(
+        unconfigured,
+        token,
+        registration(bytesToHex(key.secretKey)),
+      ),
+      await getIdentities(unconfigured, token),
+      await deleteIdentity(unconfigured, key.pubkey, token),
+      await postLogout(unconfigured, token),
+    ];
+    expect(responses.map(({ status }) => status)).toEqual([
+      200, 200, 201, 200, 204, 204,
+    ]);
+  });
+
+  it.each<[string, BodyInit]>([
+    ['an empty body', ''],
+    ['truncated JSON', '{"permissions": "all"'],
+    ['a bare value', 'all'],
+    ['a JSON string', '"all"'],
+    ['a JSON array', '["all"]'],
+    ['an array of requests', JSON.stringify([{ permissions: 'all' }])],
+    ['null', 'null'],
+    ['a number', '42'],
+    ['a boolean', 'true'],
+    [
+      'invalid UTF-8',
+      new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]),
+    ],
+  ])('rejects %s with 400', async (_case, body) => {
+    const { d, token, identity } = await withIdentity();
+    await expectError(
+      await postPairing(d, identity, token, body),
+      400,
+      'invalid request',
+    );
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['missing permissions', {}],
+    ['a misspelled field', { permission: 'all' }],
+    ['null permissions', { permissions: null }],
+    ['numeric permissions', { permissions: 1 }],
+    ['boolean permissions', { permissions: true }],
+    ['permissions given as an object', { permissions: { all: true } }],
+    ['a permissions string other than "all"', { permissions: 'sign_event' }],
+    ['an uppercase "ALL"', { permissions: 'ALL' }],
+    ['a NIP-46 style list', { permissions: 'sign_event,nip44_encrypt' }],
+    ['an empty permissions string', { permissions: '' }],
+    ['a list with a number', { permissions: ['sign_event', 1] }],
+    ['a list with null', { permissions: [null] }],
+    ['a nested list', { permissions: [['sign_event']] }],
+    ['a list with an object', { permissions: [{ method: 'sign_event' }] }],
+  ])('rejects %s with 400', async (_case, request) => {
+    const { d, token, identity } = await withIdentity();
+    await expectError(
+      await postPairing(d, identity, token, JSON.stringify(request)),
+      400,
+      'invalid request',
+    );
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
+
+  it.each<[string, unknown[]]>([
+    ['a control method', ['ping']],
+    ['connect', ['connect']],
+    ['an unknown method', ['nip17_encrypt']],
+    ['an uppercase method', ['SIGN_EVENT']],
+    ['a negative kind', ['sign_event:-1']],
+    ['a kind above 65535', ['sign_event:65536']],
+    ['a kind with a leading zero', ['sign_event:01']],
+    ['a fractional kind', ['sign_event:1.5']],
+    ['a missing kind', ['sign_event:']],
+    ['a permission with whitespace', [' nip44_encrypt']],
+    ['a list with an empty string', ['']],
+    [
+      'one invalid permission among valid ones',
+      ['sign_event:1', 'nip44_encrypt', 'logout'],
+    ],
+  ])('rejects %s with 400', async (_case, permissions) => {
+    const { d, token, identity } = await withIdentity();
+    await expectError(
+      await postPairing(d, identity, token, pairingRequest(permissions)),
+      400,
+      'invalid permissions',
+    );
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
+
+  it.each<[string, (pubkey: string) => string]>([
+    ['uppercase hex', (pubkey) => pubkey.toUpperCase()],
+    ['63 characters', (pubkey) => pubkey.slice(1)],
+    ['65 characters', (pubkey) => `${pubkey}0`],
+    ['an npub', (pubkey) => npubEncode(pubkey)],
+    ['non-hex characters', () => 'zz'.repeat(32)],
+    ['leading whitespace', (pubkey) => `%20${pubkey}`],
+    ['a trailing NUL', (pubkey) => `${pubkey}%00`],
+  ])(
+    'rejects an identity pubkey given as %s with 400',
+    async (_case, malformed) => {
+      const { d, token, identity } = await withIdentity();
+      const { d: recorded, calls } = recordingPairings(d);
+      await expectError(
+        await postPairing(recorded, malformed(identity), token),
+        400,
+        'invalid pubkey',
+      );
+      expect(calls.map(([method]) => method)).toEqual([
+        'authenticateAdminSession',
+      ]);
+      expect(await pairingRows(d.hub)).toEqual([]);
+    },
+  );
+
+  it('returns 404 for an identity that does not exist', async () => {
+    const { d, token, identity } = await withIdentity();
+    const deleted = randomKey();
+    await register(d, token, bytesToHex(deleted.secretKey));
+    expect((await deleteIdentity(d, deleted.pubkey, token)).status).toBe(204);
+
+    for (const pubkey of [randomKey().pubkey, deleted.pubkey]) {
+      await expectError(await postPairing(d, pubkey, token), 404, 'not found', [
+        token,
+        ...REMOTE_SIGNER_PUBKEY_FORMS,
+      ]);
+    }
+    expect(await pairingRows(d.hub)).toEqual([]);
+    await createdPairing(await postPairing(d, identity, token));
+  });
+
+  it(`accepts a body of exactly ${MAX_PAIRING_BODY_BYTES} bytes`, async () => {
+    expect(MAX_PAIRING_BODY_BYTES).toBe(4 * 1024);
+    const { d, token, identity } = await withIdentity();
+    const body = pairingRequest('all').padEnd(MAX_PAIRING_BODY_BYTES, ' ');
+    expect(utf8(body).byteLength).toBe(MAX_PAIRING_BODY_BYTES);
+    await createdPairing(await postPairing(d, identity, token, body));
+  });
+
+  it('accepts over 200 sign_event:<kind> permissions', async () => {
+    const { d, token, identity } = await withIdentity();
+    const kinds = Array.from({ length: 210 }, (_, i) => 65_535 - i);
+    const body = pairingRequest(kinds.map((kind) => `sign_event:${kind}`));
+    expect(utf8(body).byteLength).toBeLessThanOrEqual(MAX_PAIRING_BODY_BYTES);
+
+    await createdPairing(await postPairing(d, identity, token, body));
+    const [row] = await pairingRows(d.hub);
+    expect(JSON.parse(row.permissions)).toHaveLength(210);
+  });
+
+  it('rejects a larger body before parsing it or calling the SignerHub', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { d: recorded, calls } = recordingPairings(d);
+    const body = pairingRequest('all').padEnd(MAX_PAIRING_BODY_BYTES + 1, ' ');
+    await expectError(
+      await postPairing(recorded, identity, token, body),
+      413,
+      'payload too large',
+    );
+    const streamed = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(utf8(pairingRequest('all')));
+        controller.enqueue(new Uint8Array(MAX_PAIRING_BODY_BYTES));
+        controller.close();
+      },
+    });
+    await expectError(
+      await postPairing(recorded, identity, token, streamed),
+      413,
+      'payload too large',
+    );
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+      'authenticateAdminSession',
+    ]);
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
+
+  it('reports full storage with 507 and stores nothing', async () => {
+    const log = captureLogs();
+    const { d, token, identity } = await withIdentity();
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+    });
+    await expectError(
+      await postPairing(d, identity, token),
+      507,
+      'insufficient storage',
+      [...REMOTE_SIGNER_PUBKEY_FORMS, token, 'bunker:'],
+    );
+    expect(loggedCalls(log)).toEqual([
+      ['Pairing creation failed: storage is full'],
+    ]);
+    vi.restoreAllMocks();
+    expect(await pairingRows(d.hub)).toEqual([]);
+
+    // Once writes succeed again, the same session can create a pairing.
+    await createdPairing(await postPairing(d, identity, token));
+  });
+
+  it.each<[string, unknown]>([
+    ['missing', undefined],
+    ['empty', ''],
+    ['whitespace', '  \n'],
+    ['an nsec with a bad checksum', tamperNsec(REMOTE_SIGNER_NSEC)],
+    ['a truncated nsec', REMOTE_SIGNER_NSEC.slice(0, -1)],
+    ['an npub', npubEncode(remoteSigner.pubkey)],
+    ['hex that is too short', bytesToHex(remoteSigner.secretKey).slice(1)],
+    [
+      'hex with a non-hex digit',
+      `${bytesToHex(remoteSigner.secretKey).slice(0, -1)}g`,
+    ],
+    ['the zero scalar', '00'.repeat(32)],
+    ['the curve order', CURVE_ORDER_HEX],
+    ['a scalar above the curve order', 'ff'.repeat(32)],
+    ['not a string', 12_345],
+  ])(
+    'reports a server configuration error when REMOTE_SIGNER_PRIVATE_KEY is %s',
+    async (_case, value) => {
+      const log = captureLogs();
+      const { d, token, identity } = await withIdentity();
+      const { d: recorded, calls } = recordingPairings(
+        withRemoteSignerPrivateKey(d, value),
+      );
+      const forbidden = [
+        ...REMOTE_SIGNER_KEY_FORMS,
+        ...REMOTE_SIGNER_PUBKEY_FORMS,
+        ...(typeof value === 'string' && value.trim() !== ''
+          ? [value.trim()]
+          : []),
+        token,
+        'bunker:',
+      ];
+
+      const response = await postPairing(recorded, identity, token);
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      await expectError(response, 500, 'server configuration error', forbidden);
+      expect(loggedCalls(log)).toEqual([[REMOTE_SIGNER_CONFIGURATION_LOG]]);
+      expectSafeLogs(log, forbidden);
+      // Checked before the SignerHub is asked to create a pairing.
+      expect(calls.map(([method]) => method)).toEqual([
+        'authenticateAdminSession',
+      ]);
+      expect(await pairingRows(d.hub)).toEqual([]);
+    },
+  );
+
+  it.each<
+    [
+      string,
+      (d: Deployment, token: string, identity: string) => Promise<Response>,
+      number,
+      string,
+    ]
+  >([
+    [
+      'an unauthenticated request',
+      (d, _token, identity) => postPairing(d, identity, undefined),
+      401,
+      'unauthorized',
+    ],
+    [
+      'a cross-origin request',
+      (d, token, identity) =>
+        postPairing(d, identity, token, pairingRequest('all'), {
+          origin: 'https://evil.example',
+        }),
+      403,
+      'forbidden',
+    ],
+    [
+      'a request without Origin',
+      (d, token, identity) =>
+        postPairing(d, identity, token, pairingRequest('all'), {
+          origin: null,
+        }),
+      403,
+      'forbidden',
+    ],
+    [
+      'a malformed identity pubkey',
+      (d, token, identity) => postPairing(d, identity.toUpperCase(), token),
+      400,
+      'invalid pubkey',
+    ],
+    [
+      'an oversized body',
+      (d, token, identity) =>
+        postPairing(d, identity, token, ' '.repeat(MAX_PAIRING_BODY_BYTES + 1)),
+      413,
+      'payload too large',
+    ],
+    [
+      'a malformed body',
+      (d, token, identity) => postPairing(d, identity, token, '{'),
+      400,
+      'invalid request',
+    ],
+  ])(
+    'rejects %s before checking REMOTE_SIGNER_PRIVATE_KEY',
+    async (_case, request, status, error) => {
+      const { d, token, identity } = await withIdentity();
+      const log = captureLogs();
+      await expectError(
+        await request(
+          withRemoteSignerPrivateKey(d, undefined),
+          token,
+          identity,
+        ),
+        status,
+        error,
+      );
+      expect(loggedCalls(log)).toEqual([]);
+    },
+  );
+
+  it.each([
+    'wss://signflare.example',
+    'ws://signflare.example',
+    'ftp://signflare.example',
+  ])('fails safely for a request URL on %s', async (origin) => {
+    const log = captureLogs();
+    const { d, token, identity } = await withIdentity();
+    const { d: recorded, calls } = recordingPairings(d);
+    const response = await postPairing(
+      recorded,
+      identity,
+      token,
+      pairingRequest('all'),
+      { url: pairingsUrl(identity, origin) },
+    );
+
+    await expectError(response, 500, 'internal error', [
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      token,
+      'bunker:',
+    ]);
+    expect(loggedCalls(log)).toEqual([
+      ['Admin API request failed:', 'TypeError'],
+    ]);
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+    ]);
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
+});
+
+describe('pairing connection token', () => {
+  it('is parsed by the nostr-tools NIP-46 client into the created pairing', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { d: recorded, calls, results } = recordingPairings(d);
+    const { bunkerUrl } = await createdPairing(
+      await postPairing(recorded, identity, token),
+    );
+
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+      'createPairing',
+    ]);
+    const [result] = results;
+    if (result.status !== 'created') {
+      throw new Error(result.status);
+    }
+    expect(await parseBunkerInput(bunkerUrl)).toEqual({
+      pubkey: remoteSigner.pubkey,
+      relays: [RELAY_URL],
+      secret: result.secret,
+    });
+  });
+
+  it.each<[string, string]>([
+    ['https://signflare.example', 'wss://signflare.example/'],
+    ['http://localhost:5173', 'ws://localhost:5173/'],
+    ['https://signflare.example:8443', 'wss://signflare.example:8443/'],
+    ['http://127.0.0.1:8787', 'ws://127.0.0.1:8787/'],
+    ['http://[::1]:8787', 'ws://[::1]:8787/'],
+  ])(
+    'carries the root WebSocket URL of a request to %s',
+    async (origin, relay) => {
+      const { d, token, identity } = await withIdentity();
+      const { pointer } = await createdPairing(
+        await postPairing(d, identity, token, pairingRequest('all'), {
+          url: pairingsUrl(identity, origin),
+        }),
+      );
+      expect(pointer.relays).toEqual([relay]);
+    },
+  );
+
+  it('leaves the request path, query, and fragment out of the relay URL', async () => {
+    const { d, token, identity } = await withIdentity();
+    const url = `${pairingsUrl(identity)}?relay=wss%3A%2F%2Fevil.example%2F&debug=1#fragment`;
+    const { pointer } = await createdPairing(
+      await postPairing(d, identity, token, pairingRequest('all'), { url }),
+    );
+    expect(pointer.relays).toEqual([RELAY_URL]);
+  });
+
+  it('ignores Host and forwarding headers', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { pointer } = await createdPairing(
+      await postPairing(d, identity, token, pairingRequest('all'), {
+        headers: {
+          'Content-Type': 'application/json',
+          Host: 'evil.example',
+          'X-Forwarded-Host': 'evil.example',
+          'X-Forwarded-Proto': 'http',
+          'X-Forwarded-Port': '8080',
+          'X-Forwarded-Prefix': '/evil',
+          Forwarded: 'for=192.0.2.1;host=evil.example;proto=http',
+          'CF-Visitor': '{"scheme":"http"}',
+        },
+      }),
+    );
+    expect(pointer.relays).toEqual([RELAY_URL]);
+  });
+
+  it('carries a secret that establishes one session until expiresAt', async () => {
+    const { d, token, identity } = await withIdentity();
+    const permissions = ['sign_event:1', 'nip44_encrypt'];
+    const first = await createdPairing(
+      await postPairing(d, identity, token, pairingRequest(permissions)),
+    );
+    const clientPubkey = randomKey().pubkey;
+
+    expect(
+      await d.hub.establishSession({
+        secret: first.pointer.secret,
+        clientPubkey,
+        now: first.expiresAt - 1,
+      }),
+    ).toMatchObject({
+      status: 'created',
+      session: { clientPubkey, identityPubkey: identity, permissions },
+    });
+    expect(
+      await d.hub.establishSession({
+        secret: first.pointer.secret,
+        clientPubkey: randomKey().pubkey,
+        now: first.expiresAt - 1,
+      }),
+    ).toEqual({ status: 'invalid_secret' });
+
+    const second = await createdPairing(await postPairing(d, identity, token));
+    expect(
+      await d.hub.establishSession({
+        secret: second.pointer.secret,
+        clientPubkey: randomKey().pubkey,
+        now: second.expiresAt,
+      }),
+    ).toEqual({ status: 'pairing_expired' });
+  });
+});
+
+describe('pairing connection material', () => {
+  it('appears in the response only inside bunkerUrl', async () => {
+    const { d, token, identity } = await withIdentity();
+    const response = await postPairing(d, identity, token);
+    const { text, bunkerUrl, pointer } = await createdPairing(response);
+
+    expect(bunkerUrl).toContain(pointer.secret);
+    expect(bunkerUrl).toContain(remoteSigner.pubkey);
+    expect(text.split(pointer.secret)).toHaveLength(2);
+    expect(text.split(remoteSigner.pubkey)).toHaveLength(2);
+    expectNoSecretIn(response, text.replace(bunkerUrl, ''), [
+      pointer.secret,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+    ]);
+  });
+
+  it('stores only the hash of the pairing secret', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { pointer } = await createdPairing(
+      await postPairing(d, identity, token),
+    );
+
+    const [row] = await pairingRows(d.hub);
+    expect(bytesToHex(new Uint8Array(row.secret_hash))).toBe(
+      await sha256Hex(pointer.secret),
+    );
+    await runInDurableObject(d.hub, (_instance, state) => {
+      expect(valuesContainingSecret(state.storage.sql, pointer.secret)).toEqual(
+        [],
+      );
+    });
+  });
+
+  it('never returns, logs, stores, or passes on the remote-signer private key', async () => {
+    const log = captureLogs();
+    const { d, token, identity } = await withIdentity();
+    const { d: recorded, calls } = recordingPairings(d);
+    const response = await postPairing(recorded, identity, token);
+    const { text, pointer } = await createdPairing(response);
+    expect(pointer.pubkey).toBe(remoteSigner.pubkey);
+
+    expectNoSecretIn(response, text, REMOTE_SIGNER_KEY_FORMS);
+    // Nothing is logged on success: no key and no pairing secret.
+    expect(loggedCalls(log)).toEqual([]);
+    // The SignerHub receives the identity, the permissions, and the time.
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+      'createPairing',
+    ]);
+    expect(calls[1][1]).toEqual([identity, 'all', expect.any(Number)]);
+    const rpc = JSON.stringify(calls);
+    for (const value of [
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+    ]) {
+      expect(rpc).not.toContain(value);
+    }
+    await runInDurableObject(d.hub, (_instance, state) => {
+      const { sql } = state.storage;
+      for (const hex of [
+        bytesToHex(remoteSigner.secretKey),
+        remoteSigner.pubkey,
+      ]) {
+        expect(valuesContainingSecret(sql, hex)).toEqual([]);
+      }
+      const texts = allStoredValues(sql).filter(
+        (value): value is string => typeof value === 'string',
+      );
+      for (const value of [
+        REMOTE_SIGNER_NSEC,
+        npubEncode(remoteSigner.pubkey),
+      ]) {
+        expect(texts.filter((text) => text.includes(value))).toEqual([]);
+      }
+    });
+  });
+
+  it('is not exposed by other responses', async () => {
+    const { d, token, identity } = await withIdentity();
+    const { pointer } = await createdPairing(
+      await postPairing(d, identity, token),
+    );
+    const another = randomKey();
+    const responses = [
+      await send(d.env, `${ORIGIN}/`),
+      await getSession(d, token),
+      await getIdentities(d, token),
+      await postIdentity(d, token, registration(bytesToHex(another.secretKey))),
+      await deleteIdentity(d, another.pubkey, token),
+      await postPairing(d, identity, undefined),
+      await postPairing(d, identity, token, pairingRequest(['ping'])),
+      await postPairing(d, randomKey().pubkey, token),
+      await postPairing(d, identity, token, pairingRequest('all'), {
+        origin: 'https://evil.example',
+      }),
+    ];
+
+    expect(responses.map(({ status }) => status)).toEqual([
+      200, 200, 200, 201, 204, 401, 400, 404, 403,
+    ]);
+    for (const response of responses) {
+      expectNoSecretIn(response, await response.text(), [
+        pointer.secret,
+        ...REMOTE_SIGNER_PUBKEY_FORMS,
+        ...REMOTE_SIGNER_KEY_FORMS,
+        'bunker:',
+      ]);
+    }
+  });
+});
+
+describe('pairing endpoint errors', () => {
+  type Scenario = (
+    d: Deployment,
+    token: string,
+    identity: string,
+  ) => Promise<[Response, string[]]>;
+
+  it.each<[string, number, string, unknown[][], Scenario]>([
+    [
+      'malformed JSON',
+      400,
+      'invalid request',
+      [],
+      async (d, token, identity) => [
+        await postPairing(d, identity, token, '{"permissions": "all"'),
+        [],
+      ],
+    ],
+    [
+      'an invalid permission',
+      400,
+      'invalid permissions',
+      [],
+      async (d, token, identity) => [
+        await postPairing(
+          d,
+          identity,
+          token,
+          pairingRequest(['sign_event:65536']),
+        ),
+        [],
+      ],
+    ],
+    [
+      'a malformed identity pubkey',
+      400,
+      'invalid pubkey',
+      [],
+      async (d, token, identity) => [
+        await postPairing(d, npubEncode(identity), token),
+        [],
+      ],
+    ],
+    [
+      'an unknown identity',
+      404,
+      'not found',
+      [],
+      async (d, token) => [await postPairing(d, randomKey().pubkey, token), []],
+    ],
+    [
+      'an oversized body',
+      413,
+      'payload too large',
+      [],
+      async (d, token, identity) => [
+        await postPairing(
+          d,
+          identity,
+          token,
+          pairingRequest('all').padEnd(MAX_PAIRING_BODY_BYTES + 1, ' '),
+        ),
+        [],
+      ],
+    ],
+    [
+      'full storage',
+      507,
+      'insufficient storage',
+      [['Pairing creation failed: storage is full']],
+      async (d, token, identity) => {
+        await instrumentHubSql(d.hub, {
+          failing: NON_DELETE_WRITE,
+          message: SQLITE_FULL_MESSAGE,
+        });
+        return [await postPairing(d, identity, token), []];
+      },
+    ],
+    [
+      'a missing REMOTE_SIGNER_PRIVATE_KEY',
+      500,
+      'server configuration error',
+      [[REMOTE_SIGNER_CONFIGURATION_LOG]],
+      async (d, token, identity) => [
+        await postPairing(
+          withRemoteSignerPrivateKey(d, undefined),
+          identity,
+          token,
+        ),
+        [],
+      ],
+    ],
+    [
+      'an invalid REMOTE_SIGNER_PRIVATE_KEY',
+      500,
+      'server configuration error',
+      [[REMOTE_SIGNER_CONFIGURATION_LOG]],
+      async (d, token, identity) => {
+        const invalid = tamperNsec(REMOTE_SIGNER_NSEC);
+        return [
+          await postPairing(
+            withRemoteSignerPrivateKey(d, invalid),
+            identity,
+            token,
+          ),
+          [invalid],
+        ];
+      },
+    ],
+    [
+      'a request URL that is neither http: nor https:',
+      500,
+      'internal error',
+      [['Admin API request failed:', 'TypeError']],
+      async (d, token, identity) => [
+        await postPairing(d, identity, token, pairingRequest('all'), {
+          url: pairingsUrl(identity, 'wss://signflare.example'),
+        }),
+        [],
+      ],
+    ],
+    [
+      'an unexpected error',
+      500,
+      'internal error',
+      [['Admin API request failed:', 'Error']],
+      async (d, token, identity) => {
+        const detail = [
+          'SQLITE_ERROR: INSERT INTO pairings failed',
+          bytesToHex(remoteSigner.secretKey),
+          REMOTE_SIGNER_NSEC,
+          TEST_MASTER_ENCRYPTION_KEY,
+          '    at createPairing (src/pairings.ts:1:1)',
+        ].join('\n');
+        const failing = withSignerHub(
+          d,
+          stubNamespace(d.hub, {
+            overrides: {
+              createPairing: () => Promise.reject(new Error(detail)),
+            },
+          }),
+        );
+        return [
+          await postPairing(failing, identity, token),
+          [detail, 'SQLITE_ERROR'],
+        ];
+      },
+    ],
+  ])('leak nothing on %s', async (_case, status, error, logged, scenario) => {
+    const { d, token, identity, identityKey } = await withIdentity();
+    const log = captureLogs();
+    const [response, extra] = await scenario(d, token, identity);
+    const forbidden = [
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      ...privateKeyForms(identityKey.secretKey),
+      ...MASTER_KEY_FORMS,
+      token,
+      await tokenHash(token),
+      'bunker:',
+      ...extra,
+    ];
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.clone().text()).not.toMatch(SQL_DETAILS);
+    await expectError(response, status, error, forbidden);
+    expect(loggedCalls(log)).toEqual(logged);
+    expectSafeLogs(log, forbidden);
+    vi.restoreAllMocks();
+    expect(await pairingRows(d.hub)).toEqual([]);
+  });
 });
