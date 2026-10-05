@@ -11,10 +11,10 @@
       },
     ],
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["SignerHub"],
+  "exports": {
+    "SignerHub": {
+      "type": "durable-object",
+      "storage": "sqlite",
     },
-  ],
+  },
 }
