@@ -39,6 +39,7 @@ describe('deployment configuration', () => {
     const config = parseJsonc(wranglerConfig) as Record<string, unknown>;
     expect(config).not.toHaveProperty('vars');
     expect(wranglerConfig).not.toContain('MASTER_ENCRYPTION_KEY');
+    expect(wranglerConfig).not.toContain('REMOTE_SIGNER_PRIVATE_KEY');
     expect(wranglerConfig).not.toContain('ADMIN_PUBKEY');
     // Local values belong in .dev.vars or .env, which are never committed.
     const ignored = gitignore.split('\n');
@@ -46,17 +47,21 @@ describe('deployment configuration', () => {
     expect(ignored).toContain('.env*');
   });
 
-  it('types ADMIN_PUBKEY and MASTER_ENCRYPTION_KEY as optional bindings', () => {
+  it('types the deployment configuration as optional bindings', () => {
     expectTypeOf<SignflareBindings>()
       .toHaveProperty('ADMIN_PUBKEY')
       .toEqualTypeOf<string | undefined>();
     expectTypeOf<SignflareBindings>()
       .toHaveProperty('MASTER_ENCRYPTION_KEY')
       .toEqualTypeOf<string | undefined>();
+    expectTypeOf<SignflareBindings>()
+      .toHaveProperty('REMOTE_SIGNER_PRIVATE_KEY')
+      .toEqualTypeOf<string | undefined>();
     expectTypeOf<SignflareBindings>().toExtend<Env>();
     expectTypeOf<{
       ADMIN_PUBKEY: string;
       MASTER_ENCRYPTION_KEY: string;
+      REMOTE_SIGNER_PRIVATE_KEY: string;
       SIGNER_HUB: Env['SIGNER_HUB'];
     }>().toExtend<SignflareBindings>();
   });
