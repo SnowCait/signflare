@@ -3,6 +3,7 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import type { CookieOptions } from 'hono/utils/cookie';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { toBunkerURL } from 'nostr-tools/nip46';
 import {
   ADMIN_SESSION_LIFETIME_SECONDS,
   type AdminSession,
@@ -18,6 +19,13 @@ import {
   parseNip98Authorization,
   verifyNip98Event,
 } from './nip98';
+import type { PairingPermissionsInput } from './pairings';
+import { ALL_PERMISSIONS } from './permissions';
+import { relayUrl } from './relay-url';
+import {
+  RemoteSignerConfigurationError,
+  remoteSignerPubkey,
+} from './remote-signer';
 import { getSignerHub } from './signer-hub';
 
 // Login needs no body. Anything larger is rejected before it is hashed.
@@ -26,6 +34,11 @@ export const MAX_LOGIN_BODY_BYTES = 8 * 1024;
 // A registration body holds a single private key and fits well within this.
 // Anything larger is rejected before it is parsed.
 export const MAX_IDENTITY_BODY_BYTES = 1024;
+
+// A pairing body holds the permissions to grant. Even a list of over 200
+// sign_event:<kind> entries fits within this. Anything larger is rejected
+// before it is parsed.
+export const MAX_PAIRING_BODY_BYTES = 4 * 1024;
 
 const PUBKEY = /^[0-9a-f]{64}$/;
 
@@ -54,6 +67,12 @@ export const adminApi = new Hono<AdminApiEnv>();
 adminApi.onError((error, c) => {
   if (error instanceof Nip98AuthError) {
     return unauthorized(c);
+  }
+  if (error instanceof RemoteSignerConfigurationError) {
+    console.error(
+      'REMOTE_SIGNER_PRIVATE_KEY must be set to an nsec or a 64-character hex private key',
+    );
+    return errorResponse(c, 500, 'server configuration error');
   }
   // Only the name is logged: messages and stacks are not needed to tell the
   // failure class and must never be able to carry request credentials.
@@ -206,6 +225,59 @@ adminApi.delete('/identities/:pubkey', requireAdminSession, async (c) => {
   return c.body(null, 204);
 });
 
+adminApi.post(
+  '/identities/:pubkey/pairings',
+  requireAdminSession,
+  async (c) => {
+    const identityPubkey = c.req.param('pubkey');
+    if (!PUBKEY.test(identityPubkey)) {
+      return errorResponse(c, 400, 'invalid pubkey');
+    }
+    const body = await readBody(c.req.raw, MAX_PAIRING_BODY_BYTES);
+    if (body === null) {
+      return errorResponse(c, 413, 'payload too large');
+    }
+    const permissions = parsePairingRequest(body);
+    if (permissions === null) {
+      return errorResponse(c, 400, 'invalid request');
+    }
+    // Both are derived before the pairing is created, so that no pairing is
+    // left behind without a connection token. The relay comes from the URL
+    // the Worker received, never from Host or X-Forwarded-* headers.
+    const remoteSigner = remoteSignerPubkey(c.env.REMOTE_SIGNER_PRIVATE_KEY);
+    const relay = relayUrl(c.req.url);
+
+    const result = await getSignerHub(c.env).createPairing(
+      identityPubkey,
+      permissions,
+      unixNow(),
+    );
+    switch (result.status) {
+      case 'created':
+        // The connection token is the only place where the pairing secret
+        // and the remote-signer pubkey are returned (docs/design.md §30.8).
+        return c.json(
+          {
+            bunkerUrl: toBunkerURL({
+              pubkey: remoteSigner,
+              relays: [relay],
+              secret: result.secret,
+            }),
+            expiresAt: result.pairing.expiresAt,
+          },
+          201,
+        );
+      case 'invalid_permissions':
+        return errorResponse(c, 400, 'invalid permissions');
+      case 'identity_not_found':
+        return errorResponse(c, 404, 'not found');
+      case 'storage_full':
+        console.error('Pairing creation failed: storage is full');
+        return errorResponse(c, 507, 'insufficient storage');
+    }
+  },
+);
+
 // Never includes the session token.
 function sessionResponse(session: AdminSession) {
   return { pubkey: session.adminPubkey, expiresAt: session.expiresAt };
@@ -222,22 +294,42 @@ function identityResponse(identity: IdentityMetadata) {
 }
 
 // Returns the privateKey string of a {"privateKey": ...} body, or null for
-// any other body. The key itself is validated by the SignerHub. Parser
-// messages can quote the input, so they are discarded.
+// any other body. The key itself is validated by the SignerHub.
 function parsePrivateKeyRequest(body: Uint8Array): string | null {
-  let request: unknown;
+  const privateKey = parseJsonObject(body)?.privateKey;
+  return typeof privateKey === 'string' ? privateKey : null;
+}
+
+// Returns the permissions of a {"permissions": "all" | string[]} body, or
+// null for any other body. Which permissions are valid is left to
+// createPairing().
+function parsePairingRequest(body: Uint8Array): PairingPermissionsInput | null {
+  const permissions = parseJsonObject(body)?.permissions;
+  return permissions === ALL_PERMISSIONS || isStringArray(permissions)
+    ? permissions
+    : null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === 'string')
+  );
+}
+
+// The JSON object in a request body, or null for any other body. Parser
+// messages can quote the input, so they are discarded.
+function parseJsonObject(body: Uint8Array): Record<string, unknown> | null {
+  let value: unknown;
   try {
-    request = JSON.parse(
+    value = JSON.parse(
       new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body),
     );
   } catch {
     return null;
   }
-  if (typeof request !== 'object' || request === null) {
-    return null;
-  }
-  const { privateKey } = request as { privateKey?: unknown };
-  return typeof privateKey === 'string' ? privateKey : null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 function errorResponse(
