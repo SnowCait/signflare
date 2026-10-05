@@ -26,6 +26,7 @@ import {
   RemoteSignerConfigurationError,
   remoteSignerPubkey,
 } from './remote-signer';
+import type { Session } from './sessions';
 import { getSignerHub } from './signer-hub';
 
 // Login needs no body. Anything larger is rejected before it is hashed.
@@ -278,6 +279,32 @@ adminApi.post(
   },
 );
 
+adminApi.get('/identities/:pubkey/sessions', requireAdminSession, async (c) => {
+  const identityPubkey = c.req.param('pubkey');
+  if (!PUBKEY.test(identityPubkey)) {
+    return errorResponse(c, 400, 'invalid pubkey');
+  }
+  const result = await getSignerHub(c.env).listIdentitySessions(identityPubkey);
+  switch (result.status) {
+    case 'found':
+      return c.json(result.sessions.map(clientSessionResponse));
+    case 'identity_not_found':
+      return errorResponse(c, 404, 'not found');
+  }
+});
+
+// Revocation takes effect for the next NIP-46 request (docs/design.md §30.10).
+adminApi.delete('/sessions/:clientPubkey', requireAdminSession, async (c) => {
+  const clientPubkey = c.req.param('clientPubkey');
+  if (!PUBKEY.test(clientPubkey)) {
+    return errorResponse(c, 400, 'invalid pubkey');
+  }
+  if (!(await getSignerHub(c.env).revokeSession(clientPubkey))) {
+    return errorResponse(c, 404, 'not found');
+  }
+  return c.body(null, 204);
+});
+
 // Never includes the session token.
 function sessionResponse(session: AdminSession) {
   return { pubkey: session.adminPubkey, expiresAt: session.expiresAt };
@@ -290,6 +317,22 @@ function identityResponse(identity: IdentityMetadata) {
     npub: identity.npub,
     createdAt: identity.createdAt,
     updatedAt: identity.updatedAt,
+  };
+}
+
+// docs/design.md §30.9. The identity is already given by the path. Client
+// metadata is returned as stored: it is an unauthenticated display hint.
+function clientSessionResponse(session: Session) {
+  return {
+    clientPubkey: session.clientPubkey,
+    permissions: session.permissions,
+    clientMetadata: {
+      name: session.clientMetadata.name,
+      url: session.clientMetadata.url,
+      image: session.clientMetadata.image,
+    },
+    createdAt: session.createdAt,
+    lastUsedAt: session.lastUsedAt,
   };
 }
 
