@@ -36,6 +36,38 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    id: 3,
+    sql: `
+      CREATE TABLE pairings (
+        id TEXT PRIMARY KEY,
+        identity_pubkey TEXT NOT NULL,
+        secret_hash BLOB NOT NULL UNIQUE,
+        permissions TEXT NOT NULL,
+        expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX pairings_identity_pubkey
+      ON pairings(identity_pubkey);
+
+      CREATE TABLE sessions (
+        client_pubkey TEXT PRIMARY KEY,
+        identity_pubkey TEXT NOT NULL,
+        permissions TEXT NOT NULL,
+
+        client_name TEXT,
+        client_url TEXT,
+        client_image TEXT,
+
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX sessions_identity_pubkey
+      ON sessions(identity_pubkey);
+    `,
+  },
 ];
 
 // Durable Object SQLite does not support PRAGMA user_version, so applied

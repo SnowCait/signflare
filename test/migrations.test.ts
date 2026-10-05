@@ -37,6 +37,30 @@ function insertTestIdentity(sql: SqlStorage, pubkey: string): void {
   );
 }
 
+function insertTestAdminState(sql: SqlStorage, adminPubkey: string): void {
+  sql.exec(
+    'INSERT INTO admin_sessions VALUES (?, ?, ?, ?)',
+    new Uint8Array(32).fill(7),
+    adminPubkey,
+    2,
+    1,
+  );
+  sql.exec("INSERT INTO admin_auth_events VALUES ('ee', 61)");
+}
+
+function insertTestPairingAndSession(sql: SqlStorage, pubkey: string): void {
+  sql.exec(
+    "INSERT INTO pairings VALUES ('p1', ?, ?, '[\"sign_event\"]', 601, 1)",
+    pubkey,
+    new Uint8Array(32).fill(9),
+  );
+  sql.exec(
+    "INSERT INTO sessions VALUES (?, ?, '[\"nip44_encrypt\"]', 'client', NULL, NULL, 1, 2)",
+    'cd'.repeat(32),
+    pubkey,
+  );
+}
+
 function columns(sql: SqlStorage, table: string) {
   return sql
     .exec<{
@@ -46,6 +70,34 @@ function columns(sql: SqlStorage, table: string) {
       pk: number;
     }>('SELECT name, type, "notnull", pk FROM pragma_table_info(?)', table)
     .toArray();
+}
+
+// Indexes by the columns they cover. Only explicitly created indexes are
+// compared by name: automatic index names are an SQLite detail.
+function indexes(sql: SqlStorage, table: string) {
+  return sql
+    .exec<{
+      name: string;
+      unique: number;
+      origin: string;
+    }>('SELECT name, "unique", origin FROM pragma_index_list(?)', table)
+    .toArray()
+    .map(({ name, unique, origin }) => ({
+      columns: sql
+        .exec<{
+          name: string;
+        }>('SELECT name FROM pragma_index_info(?) ORDER BY seqno', name)
+        .toArray()
+        .map((column) => column.name),
+      unique,
+      origin,
+      ...(origin === 'c' ? { name } : {}),
+    }))
+    .sort((a, b) => a.columns.join().localeCompare(b.columns.join()));
+}
+
+function foreignKeys(sql: SqlStorage, table: string) {
+  return sql.exec('SELECT * FROM pragma_foreign_key_list(?)', table).toArray();
 }
 
 // Every table definition and row, to show that nothing changed.
@@ -63,15 +115,46 @@ function snapshot(sql: SqlStorage) {
   return { schema, rows };
 }
 
+// The definition and rows of one table.
+function tableSnapshot(sql: SqlStorage, table: string) {
+  return {
+    sql: sql
+      .exec<{
+        sql: string;
+      }>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        table,
+      )
+      .one().sql,
+    rows: [...sql.exec(`SELECT * FROM "${table}" ORDER BY rowid`).raw()],
+  };
+}
+
+// The tables each migration after the first creates.
+const TABLES_ADDED_BY = new Map([
+  [2, ['admin_sessions', 'admin_auth_events']],
+  [3, ['pairings', 'sessions']],
+]);
+
 // Puts a database that the constructor already migrated back to the state
-// migration 1 left it in.
-function revertToVersion1(sql: SqlStorage): void {
-  sql.exec('DROP TABLE admin_sessions');
-  sql.exec('DROP TABLE admin_auth_events');
-  sql.exec('DELETE FROM _sql_schema_migrations WHERE id > 1');
+// the given migration left it in.
+function revertTo(sql: SqlStorage, version: number): void {
+  for (const [id, tables] of TABLES_ADDED_BY) {
+    if (id > version) {
+      for (const table of tables) {
+        sql.exec(`DROP TABLE ${table}`);
+      }
+    }
+  }
+  sql.exec('DELETE FROM _sql_schema_migrations WHERE id > ?', version);
 }
 
 const PUBKEY = 'ab'.repeat(32);
+const ADMIN_STATE_TABLES = [
+  'identities',
+  'admin_sessions',
+  'admin_auth_events',
+];
 const LATEST = MIGRATIONS.length;
 const ALL_IDS = MIGRATIONS.map(({ id }) => id);
 
@@ -83,7 +166,7 @@ describe('schema migrations', () => {
         expect.arrayContaining(['_sql_schema_migrations', 'identities']),
       );
       expect(getSchemaVersion(sql)).toBe(MIGRATIONS.at(-1)?.id);
-      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2]);
+      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2, 3]);
     });
   });
 
@@ -96,6 +179,8 @@ describe('schema migrations', () => {
         'admin_auth_events',
         'admin_sessions',
         'identities',
+        'pairings',
+        'sessions',
       ]);
     });
   });
@@ -134,25 +219,124 @@ describe('schema migrations', () => {
     });
   });
 
-  it('adds the admin tables to a version 1 database without losing identities', async () => {
+  it('creates the pairings table with the designed columns', async () => {
+    await runInDurableObject(freshHub(), (_instance, state) => {
+      expect(columns(state.storage.sql, 'pairings')).toEqual([
+        { name: 'id', type: 'TEXT', notnull: 0, pk: 1 },
+        { name: 'identity_pubkey', type: 'TEXT', notnull: 1, pk: 0 },
+        { name: 'secret_hash', type: 'BLOB', notnull: 1, pk: 0 },
+        { name: 'permissions', type: 'TEXT', notnull: 1, pk: 0 },
+        { name: 'expires_at', type: 'INTEGER', notnull: 1, pk: 0 },
+        { name: 'created_at', type: 'INTEGER', notnull: 1, pk: 0 },
+      ]);
+    });
+  });
+
+  it('creates the sessions table with the designed columns', async () => {
+    await runInDurableObject(freshHub(), (_instance, state) => {
+      expect(columns(state.storage.sql, 'sessions')).toEqual([
+        { name: 'client_pubkey', type: 'TEXT', notnull: 0, pk: 1 },
+        { name: 'identity_pubkey', type: 'TEXT', notnull: 1, pk: 0 },
+        { name: 'permissions', type: 'TEXT', notnull: 1, pk: 0 },
+        { name: 'client_name', type: 'TEXT', notnull: 0, pk: 0 },
+        { name: 'client_url', type: 'TEXT', notnull: 0, pk: 0 },
+        { name: 'client_image', type: 'TEXT', notnull: 0, pk: 0 },
+        { name: 'created_at', type: 'INTEGER', notnull: 1, pk: 0 },
+        { name: 'last_used_at', type: 'INTEGER', notnull: 1, pk: 0 },
+      ]);
+    });
+  });
+
+  it('creates the designed indexes and unique constraints', async () => {
     await runInDurableObject(freshHub(), (_instance, state) => {
       const { sql } = state.storage;
-      revertToVersion1(sql);
+      expect(indexes(sql, 'pairings')).toEqual([
+        { columns: ['id'], unique: 1, origin: 'pk' },
+        {
+          columns: ['identity_pubkey'],
+          unique: 0,
+          origin: 'c',
+          name: 'pairings_identity_pubkey',
+        },
+        { columns: ['secret_hash'], unique: 1, origin: 'u' },
+      ]);
+      expect(indexes(sql, 'sessions')).toEqual([
+        { columns: ['client_pubkey'], unique: 1, origin: 'pk' },
+        {
+          columns: ['identity_pubkey'],
+          unique: 0,
+          origin: 'c',
+          name: 'sessions_identity_pubkey',
+        },
+      ]);
+    });
+  });
+
+  it('adds no foreign keys: deletion cascades in application code', async () => {
+    await runInDurableObject(freshHub(), (_instance, state) => {
+      for (const table of ['pairings', 'sessions']) {
+        expect(foreignKeys(state.storage.sql, table)).toEqual([]);
+      }
+    });
+  });
+
+  it('upgrades a version 1 database without losing identities', async () => {
+    await runInDurableObject(freshHub(), (_instance, state) => {
+      const { sql } = state.storage;
+      revertTo(sql, 1);
       expect(getSchemaVersion(sql)).toBe(1);
       expect(tableNames(sql)).not.toContain('admin_sessions');
+      expect(tableNames(sql)).not.toContain('pairings');
       insertTestIdentity(sql, PUBKEY);
       const identities = sql.exec('SELECT * FROM identities').toArray();
 
       migrate(state.storage);
 
-      expect(getSchemaVersion(sql)).toBe(2);
-      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2]);
+      expect(getSchemaVersion(sql)).toBe(LATEST);
+      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual(ALL_IDS);
       expect(tableNames(sql)).toEqual(
-        expect.arrayContaining(['admin_auth_events', 'admin_sessions']),
+        expect.arrayContaining([
+          'admin_auth_events',
+          'admin_sessions',
+          'pairings',
+          'sessions',
+        ]),
       );
       expect(sql.exec('SELECT * FROM identities').toArray()).toEqual(
         identities,
       );
+    });
+  });
+
+  it('upgrades a version 2 database without losing identities or admin state', async () => {
+    const stub = freshHub();
+    const before = await runInDurableObject(stub, (_instance, state) => {
+      const { sql } = state.storage;
+      revertTo(sql, 2);
+      expect(getSchemaVersion(sql)).toBe(2);
+      expect(tableNames(sql)).not.toContain('pairings');
+      expect(tableNames(sql)).not.toContain('sessions');
+      insertTestIdentity(sql, PUBKEY);
+      insertTestIdentity(sql, 'ef'.repeat(32));
+      insertTestAdminState(sql, PUBKEY);
+      return ADMIN_STATE_TABLES.map((table) => tableSnapshot(sql, table));
+    });
+    expect(before.map(({ rows }) => rows.length)).toEqual([2, 1, 1]);
+
+    // The constructor applies migration 3 when the object is re-created.
+    await evictDurableObject(stub);
+
+    await runInDurableObject(stub, (_instance, state) => {
+      const { sql } = state.storage;
+      expect(getSchemaVersion(sql)).toBe(3);
+      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2, 3]);
+      expect(
+        ADMIN_STATE_TABLES.map((table) => tableSnapshot(sql, table)),
+      ).toEqual(before);
+      expect(sql.exec('SELECT * FROM pairings').toArray()).toEqual([]);
+      expect(sql.exec('SELECT * FROM sessions').toArray()).toEqual([]);
+      expect(columns(sql, 'pairings')).toHaveLength(6);
+      expect(columns(sql, 'sessions')).toHaveLength(8);
     });
   });
 
@@ -161,14 +345,8 @@ describe('schema migrations', () => {
     const before = await runInDurableObject(stub, (_instance, state) => {
       const { sql } = state.storage;
       insertTestIdentity(sql, PUBKEY);
-      sql.exec(
-        'INSERT INTO admin_sessions VALUES (?, ?, ?, ?)',
-        new Uint8Array(32).fill(7),
-        PUBKEY,
-        2,
-        1,
-      );
-      sql.exec("INSERT INTO admin_auth_events VALUES ('ee', 61)");
+      insertTestAdminState(sql, PUBKEY);
+      insertTestPairingAndSession(sql, PUBKEY);
       return snapshot(sql);
     });
 
@@ -231,7 +409,7 @@ describe('schema migrations', () => {
 
   it('accepts a single migration with id 1', async () => {
     await runInDurableObject(freshHub(), (_instance, state) => {
-      revertToVersion1(state.storage.sql);
+      revertTo(state.storage.sql, 1);
       expect(() => migrate(state.storage, [MIGRATIONS[0]])).not.toThrow();
       expect(getSchemaVersion(state.storage.sql)).toBe(1);
     });
