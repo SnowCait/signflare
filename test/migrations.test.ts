@@ -126,6 +126,13 @@ describe('schema migrations', () => {
     });
   });
 
+  it('accepts a single migration with id 1', async () => {
+    await runInDurableObject(freshHub(), (_instance, state) => {
+      expect(() => migrate(state.storage, [MIGRATIONS[0]])).not.toThrow();
+      expect(getSchemaVersion(state.storage.sql)).toBe(1);
+    });
+  });
+
   it('applies pending migrations in version order', async () => {
     await runInDurableObject(freshHub(), (_instance, state) => {
       const { sql } = state.storage;
@@ -133,13 +140,13 @@ describe('schema migrations', () => {
         ...MIGRATIONS,
         { id: 2, sql: 'CREATE TABLE ordering (step INTEGER NOT NULL);' },
         { id: 3, sql: 'INSERT INTO ordering (step) VALUES (3);' },
-        { id: 5, sql: 'INSERT INTO ordering (step) VALUES (5);' },
+        { id: 4, sql: 'INSERT INTO ordering (step) VALUES (4);' },
       ]);
-      expect(getSchemaVersion(sql)).toBe(5);
-      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2, 3, 5]);
+      expect(getSchemaVersion(sql)).toBe(4);
+      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1, 2, 3, 4]);
       expect(
         sql.exec('SELECT step FROM ordering ORDER BY rowid').toArray(),
-      ).toEqual([{ step: 3 }, { step: 5 }]);
+      ).toEqual([{ step: 3 }, { step: 4 }]);
     });
   });
 
@@ -161,26 +168,30 @@ describe('schema migrations', () => {
     });
   });
 
-  it('rejects migration lists that are not strictly increasing', async () => {
+  it.each([
+    ['a gap before the last id', [1, 2, 4]],
+    ['a gap after id 1', [1, 3]],
+    ['a first id other than 1', [2]],
+    ['duplicate ids', [1, 1]],
+    ['out-of-order ids', [2, 1]],
+    ['out-of-order ids after id 1', [1, 3, 2]],
+    ['id 0', [0]],
+    ['a negative id', [-1]],
+    ['a non-integer id', [1.5]],
+    ['a non-integer id after id 1', [1, 2.5]],
+  ])('rejects %s before applying anything', async (_case, ids) => {
     await runInDurableObject(freshHub(), (_instance, state) => {
-      const invalid = [
-        [
-          { id: 2, sql: 'SELECT 1;' },
-          { id: 1, sql: 'SELECT 1;' },
-        ],
-        [
-          { id: 1, sql: 'SELECT 1;' },
-          { id: 1, sql: 'SELECT 1;' },
-        ],
-        [{ id: 0, sql: 'SELECT 1;' }],
-        [{ id: 1.5, sql: 'SELECT 1;' }],
-      ];
-      for (const migrations of invalid) {
-        expect(() => migrate(state.storage, migrations)).toThrow(
-          'Migration ids must be strictly increasing positive integers',
-        );
-      }
-      expect(getSchemaVersion(state.storage.sql)).toBe(1);
+      const { sql } = state.storage;
+      const migrations = ids.map((id) => ({
+        id,
+        sql: 'CREATE TABLE IF NOT EXISTS not_applied (id INTEGER);',
+      }));
+      expect(() => migrate(state.storage, migrations)).toThrow(
+        'Migration ids must be consecutive positive integers starting at 1',
+      );
+      expect(getSchemaVersion(sql)).toBe(1);
+      expect(appliedMigrations(sql).map(({ id }) => id)).toEqual([1]);
+      expect(tableNames(sql)).not.toContain('not_applied');
     });
   });
 });

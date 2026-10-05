@@ -3,7 +3,8 @@ export interface Migration {
   readonly sql: string;
 }
 
-// Append-only. Never edit or reorder an applied migration; add a new one instead.
+// Append-only, with ids 1, 2, 3, ... Never edit or reorder an applied
+// migration; add a new one with the next id instead.
 export const MIGRATIONS: readonly Migration[] = [
   {
     id: 1,
@@ -42,7 +43,7 @@ export function migrate(
   storage: DurableObjectStorage,
   migrations: readonly Migration[] = MIGRATIONS,
 ): void {
-  assertOrdered(migrations);
+  assertConsecutive(migrations);
 
   const { sql } = storage;
   sql.exec(CREATE_MIGRATIONS_TABLE);
@@ -65,14 +66,16 @@ export function migrate(
   }
 }
 
-function assertOrdered(migrations: readonly Migration[]): void {
-  let previous = 0;
+// The schema version is MAX(id), so a skipped id added later would never be
+// applied. Requiring 1, 2, 3, ... rules that out.
+function assertConsecutive(migrations: readonly Migration[]): void {
+  let expectedId = 1;
   for (const { id } of migrations) {
-    if (!Number.isSafeInteger(id) || id <= previous) {
+    if (id !== expectedId) {
       throw new Error(
-        'Migration ids must be strictly increasing positive integers',
+        'Migration ids must be consecutive positive integers starting at 1',
       );
     }
-    previous = id;
+    expectedId++;
   }
 }
