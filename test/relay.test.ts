@@ -84,6 +84,7 @@ function captureLogs() {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('root WebSocket upgrade', () => {
@@ -826,6 +827,37 @@ describe('live delivery', () => {
     expect(await client.result('ping')).toBe('pong');
     expect(await other.drain()).toEqual([]);
   });
+
+  // NIP-01: an event matches when since <= created_at <= until, also when
+  // either bound is 0.
+  it.each<[string, Partial<Filter>, boolean]>([
+    ['until before created_at', { until: 99 }, false],
+    ['until at created_at', { until: 100 }, true],
+    ['until after created_at', { until: 101 }, true],
+    ['until 0', { until: 0 }, false],
+    ['since before created_at', { since: 99 }, true],
+    ['since at created_at', { since: 100 }, true],
+    ['since after created_at', { since: 101 }, false],
+    ['since 0', { since: 0 }, true],
+  ])(
+    'applies %s to a response created at 100',
+    async (_case, bound, delivered) => {
+      const relay = await relayDeployment();
+      const { client } = await connectedClient(relay);
+      const watcher = await openSocket(relay);
+      await req(watcher, 'bounded', {
+        ...responseFilter(relay, client.pubkey),
+        ...bound,
+      });
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(100_000);
+      const { event } = await client.send(client.request('ping', []));
+      expect(event.created_at).toBe(100);
+      expect(await watcher.drain()).toEqual(
+        delivered ? [['EVENT', 'bounded', event]] : [],
+      );
+    },
+  );
 
   it('keeps delivering to the subscriptions of a hibernated connection', async () => {
     const relay = await relayDeployment();

@@ -1,4 +1,4 @@
-import { type Filter, matchFilters } from 'nostr-tools/filter';
+import { type Filter, matchFilter } from 'nostr-tools/filter';
 import { NostrConnect } from 'nostr-tools/kinds';
 import { type NostrEvent, verifyEvent } from 'nostr-tools/pure';
 import type { SignflareBindings } from './config';
@@ -225,7 +225,7 @@ function deliver(sockets: readonly WebSocket[], event: NostrEvent): void {
   for (const ws of sockets) {
     try {
       for (const { id, filters } of readSubscriptions(ws)) {
-        if (matchFilters(filters, event)) {
+        if (filters.some((filter) => matches(filter, event))) {
           ws.send(`["EVENT",${JSON.stringify(id)},${serialized}]`);
         }
       }
@@ -233,6 +233,17 @@ function deliver(sockets: readonly WebSocket[], event: NostrEvent): void {
       // The connection is closing or gone.
     }
   }
+}
+
+// NIP-01 filter matching: since <= created_at <= until. nostr-tools
+// matchFilter() skips a since or until of 0, so both bounds are applied here
+// as well.
+function matches(filter: Filter, event: NostrEvent): boolean {
+  return (
+    matchFilter(filter, event) &&
+    (filter.since === undefined || event.created_at >= filter.since) &&
+    (filter.until === undefined || event.created_at <= filter.until)
+  );
 }
 
 // docs/design.md §18, steps 2 to 9.
