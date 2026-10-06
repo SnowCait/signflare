@@ -1,6 +1,7 @@
 import { HTTPAuth } from 'nostr-tools/kinds';
-import { type NostrEvent, validateEvent, verifyEvent } from 'nostr-tools/pure';
+import { type NostrEvent, verifyEvent } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
+import { isSignedEvent } from './nostr-events';
 
 // NIP-98 HTTP authentication (docs/design.md §30.1).
 //
@@ -47,8 +48,6 @@ export interface Nip98Request {
 }
 
 const AUTHORIZATION = /^Nostr +([A-Za-z0-9+/]+={0,2})$/i;
-const HEX_ID = /^[0-9a-f]{64}$/;
-const HEX_SIG = /^[0-9a-f]{128}$/;
 
 // Decodes `Authorization: Nostr <base64 event>`. Throws Nip98AuthError.
 export function parseNip98Authorization(
@@ -124,21 +123,6 @@ export async function verifyNip98Event(
 // The time from which the event no longer passes the timestamp check.
 export function nip98EventExpiresAt(event: NostrEvent): number {
   return event.created_at + NIP98_TIME_WINDOW_SECONDS;
-}
-
-function isSignedEvent(value: unknown): value is NostrEvent {
-  if (!validateEvent(value)) {
-    return false;
-  }
-  const { id, sig } = value as Partial<NostrEvent>;
-  return (
-    Number.isSafeInteger(value.kind) &&
-    Number.isSafeInteger(value.created_at) &&
-    typeof id === 'string' &&
-    HEX_ID.test(id) &&
-    typeof sig === 'string' &&
-    HEX_SIG.test(sig)
-  );
 }
 
 function tagValues(event: NostrEvent, name: string): (string | undefined)[] {

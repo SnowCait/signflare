@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InvalidPrivateKeyError } from '../src/private-key';
 import {
   RemoteSignerConfigurationError,
+  type RemoteSignerKey,
   remoteSignerPubkey,
   withRemoteSignerKey,
 } from '../src/remote-signer';
@@ -178,6 +179,25 @@ describe('withRemoteSignerKey', () => {
     }
     expect(caught).toBe(failure);
     expect(secretKey).toEqual(new Uint8Array(32));
+  });
+
+  it('takes synchronous callbacks only', () => {
+    // The key would be overwritten while an asynchronous callback still ran,
+    // so such callbacks do not type-check.
+    const asynchronous = async ({ secretKey }: RemoteSignerKey) => secretKey;
+    const promising = ({ pubkey }: RemoteSignerKey) => Promise.resolve(pubkey);
+    const calls = [
+      // @ts-expect-error The callback returns a promise.
+      () => withRemoteSignerKey(SECRET_ONE_NSEC, asynchronous),
+      // @ts-expect-error The callback returns a promise.
+      () => withRemoteSignerKey(SECRET_ONE_NSEC, promising),
+    ];
+    expect(calls).toHaveLength(2);
+    const pubkey: string = withRemoteSignerKey(
+      SECRET_ONE_NSEC,
+      (key) => key.pubkey,
+    );
+    expect(pubkey).toBe(PUBKEY_ONE);
   });
 
   it('decodes the configured value afresh on every call', () => {
