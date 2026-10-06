@@ -3273,12 +3273,14 @@ describe('pairing connection material', () => {
     expect(responses.map(({ status }) => status)).toEqual([
       200, 200, 200, 201, 204, 401, 400, 404, 403, 200, 404,
     ]);
-    for (const response of responses) {
+    for (const [index, response] of responses.entries()) {
       expectNoSecretIn(response, await response.text(), [
         pointer.secret,
         ...REMOTE_SIGNER_PUBKEY_FORMS,
         ...REMOTE_SIGNER_KEY_FORMS,
-        'bunker:',
+        // The landing page names the bunker:// scheme that it supports, but
+        // no response other than the pairing carries a connection token.
+        index === 0 ? `bunker://${remoteSigner.pubkey}` : 'bunker:',
       ]);
     }
   });
