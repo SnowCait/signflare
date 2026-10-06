@@ -63,6 +63,7 @@ describe('deployment configuration', () => {
       MASTER_ENCRYPTION_KEY: string;
       REMOTE_SIGNER_PRIVATE_KEY: string;
       SIGNER_HUB: Env['SIGNER_HUB'];
+      ASSETS: Env['ASSETS'];
     }>().toExtend<SignflareBindings>();
   });
 });

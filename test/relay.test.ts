@@ -235,7 +235,7 @@ describe('ordinary requests to the root', () => {
   it.each<[string, string, RequestInit]>([
     ['POST to the root', '/', { method: 'POST' }],
     ['GET to another path', '/relay', {}],
-    ['GET to a nested path', '/admin/relay', {}],
+    ['GET to a nested path', '/relay/nested', {}],
   ])(
     'leave WebSocket upgrades of %s to other routes',
     async (_case, path, init) => {
