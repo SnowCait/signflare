@@ -7,7 +7,7 @@ import type {
 } from './admin-sessions';
 import * as adminStatus from './admin-status';
 import type { AdminStatus } from './admin-status';
-import { parseMasterEncryptionKey, type SignflareBindings } from './config';
+import { parseMasterEncryptionKey } from './config';
 import * as identities from './identities';
 import type { IdentityMetadata } from './identities';
 import { migrate } from './migrations';
@@ -42,8 +42,8 @@ export function getSignerHub(env: Env): DurableObjectStub<SignerHub> {
   return env.SIGNER_HUB.getByName(SIGNER_HUB_NAME);
 }
 
-export class SignerHub extends DurableObject<SignflareBindings> {
-  constructor(ctx: DurableObjectState, env: SignflareBindings) {
+export class SignerHub extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // No request or RPC call is delivered until the schema is up to date.
     void ctx.blockConcurrencyWhile(async () => {

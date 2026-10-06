@@ -6,12 +6,25 @@
   "engines": {
     "node": ">=24 <25"
   },
+  "cloudflare": {
+    "bindings": {
+      "ADMIN_PUBKEY": {
+        "description": "The administrator's Nostr **public** key as 64 lowercase hex characters, not an `npub`. Only this key can sign in to the Admin UI at `/admin`, through a NIP-07 browser signer. Never give Signflare the administrator's private key. [Find or convert your key](https://github.com/SnowCait/signflare#admin_pubkey)."
+      },
+      "MASTER_ENCRYPTION_KEY": {
+        "description": "Secret root key material that encrypts registered identity private keys at rest. Use a new random value of at least 32 bytes, such as the output of `openssl rand -hex 32`: Signflare uses its exact text as key material. If it is lost or changed, stored identities can no longer be decrypted. [Details](https://github.com/SnowCait/signflare#generate-the-secrets)."
+      },
+      "REMOTE_SIGNER_PRIVATE_KEY": {
+        "description": "Secret Nostr private key (64-character hex or `nsec`) of this deployment's NIP-46 remote signer, which protects NIP-46 transport for every identity. Generate a new valid key for this purpose only, never the administrator's key or a registered identity's key. [How to generate one](https://github.com/SnowCait/signflare#generate-the-secrets)."
+      }
+    }
+  },
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "types": "wrangler types",
-    "typecheck": "wrangler types && tsc -b && svelte-check --tsconfig ./tsconfig.admin.json",
+    "types": "wrangler types --strict-vars=false",
+    "typecheck": "npm run types && tsc -b && svelte-check --tsconfig ./tsconfig.admin.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

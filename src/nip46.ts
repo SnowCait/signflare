@@ -7,7 +7,7 @@ import {
   type NostrEvent,
   type VerifiedEvent,
 } from 'nostr-tools/pure';
-import { parseMasterEncryptionKey, type SignflareBindings } from './config';
+import { parseMasterEncryptionKey } from './config';
 import { getIdentity } from './identities';
 import { isPermitted, MAX_EVENT_KIND } from './permissions';
 import {
@@ -84,7 +84,7 @@ export type OpenedRequest =
 export interface Nip46Context {
   readonly storage: DurableObjectStorage;
   // Read only once a user private key has to be decrypted.
-  readonly env: Pick<SignflareBindings, 'MASTER_ENCRYPTION_KEY'>;
+  readonly env: Pick<Env, 'MASTER_ENCRYPTION_KEY'>;
   readonly remoteSignerPubkey: string;
   // The pubkey of the request event.
   readonly clientPubkey: string;

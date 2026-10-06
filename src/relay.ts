@@ -1,7 +1,6 @@
 import { type Filter, matchFilter } from 'nostr-tools/filter';
 import { NostrConnect } from 'nostr-tools/kinds';
 import { type NostrEvent, verifyEvent } from 'nostr-tools/pure';
-import type { SignflareBindings } from './config';
 import * as nip46 from './nip46';
 import { isSignedEvent } from './nostr-events';
 import { MAX_EVENT_KIND } from './permissions';
@@ -97,7 +96,7 @@ export function isWebSocketUpgrade(request: Request): boolean {
 // Handles one message from a relay WebSocket. Never throws.
 export async function handleMessage(
   ctx: DurableObjectState,
-  env: SignflareBindings,
+  env: Env,
   ws: WebSocket,
   message: string | ArrayBuffer,
 ): Promise<void> {
@@ -249,7 +248,7 @@ function matches(filter: Filter, event: NostrEvent): boolean {
 // docs/design.md §18, steps 2 to 9.
 async function handleEvent(
   ctx: DurableObjectState,
-  env: SignflareBindings,
+  env: Env,
   ws: WebSocket,
   value: unknown,
 ): Promise<void> {
@@ -344,7 +343,7 @@ async function handleEvent(
 // A REQ replaces the subscription with the same id on this connection, if
 // any (NIP-01). A refused REQ therefore closes it as well.
 function handleReq(
-  env: SignflareBindings,
+  env: Env,
   ws: WebSocket,
   subscriptionId: string,
   values: readonly unknown[],

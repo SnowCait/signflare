@@ -12,7 +12,7 @@ import {
   isAdminSessionToken,
 } from './admin-sessions';
 import type { AdminStatus } from './admin-status';
-import { parseAdminPubkey, type SignflareBindings } from './config';
+import { parseAdminPubkey } from './config';
 import type { IdentityMetadata } from './identities';
 import {
   Nip98AuthError,
@@ -56,7 +56,7 @@ const ADMIN_SESSION_COOKIE_OPTIONS = {
 } as const satisfies CookieOptions;
 
 type AdminApiEnv = {
-  Bindings: SignflareBindings;
+  Bindings: Env;
   Variables: {
     adminPubkey: string;
     adminSession: AdminSession;

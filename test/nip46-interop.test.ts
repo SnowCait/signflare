@@ -11,7 +11,6 @@ import {
 } from 'nostr-tools/nip46';
 import { generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
 import type { PairingPermissionsInput } from '../src/pairings';
 import {
@@ -33,7 +32,7 @@ import { type Relay, relayDeployment } from './relay-helpers';
 interface Deployment {
   readonly relay: Relay;
   // The Worker env, with the same REMOTE_SIGNER_PRIVATE_KEY as the SignerHub.
-  readonly env: SignflareBindings;
+  readonly env: Env;
   readonly admin: TestKey;
 }
 
@@ -110,7 +109,7 @@ async function bunkerUrl(
 
 // The WebSocket a browser would give nostr-tools, opened by a WebSocket
 // upgrade request to the Worker under test.
-function workerWebSocket(workerEnv: SignflareBindings) {
+function workerWebSocket(workerEnv: Env) {
   return class WorkerWebSocket {
     static readonly CONNECTING = 0;
     static readonly OPEN = 1;

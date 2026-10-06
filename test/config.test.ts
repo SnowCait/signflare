@@ -1,70 +1,39 @@
+import { npubEncode } from 'nostr-tools/nip19';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
-import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
-import gitignore from '../.gitignore?raw';
-import wranglerConfig from '../wrangler.jsonc?raw';
-import {
-  parseMasterEncryptionKey,
-  type SignflareBindings,
-} from '../src/config';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { parseAdminPubkey, parseMasterEncryptionKey } from '../src/config';
 
 // Test-only values. None of them is a real secret.
 const ASCII_32 = 'test-only master key: 32 bytes!!';
 const ASCII_31 = 'test-only master key: 31 bytes!';
+// The public key of the private key 1.
+const PUBKEY_ONE =
+  '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
 
 function utf8(value: string): Uint8Array {
   return new TextEncoder().encode(value);
-}
-
-// wrangler.jsonc as JSON: without comments and trailing commas.
-function parseJsonc(text: string): unknown {
-  return JSON.parse(
-    text.replace(/^\s*\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1'),
-  );
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('deployment configuration', () => {
-  it('declares no required secrets in wrangler.jsonc', () => {
-    // With secrets.required set, local development loads only the listed keys
-    // from .dev.vars and .env, so ADMIN_PUBKEY and MASTER_ENCRYPTION_KEY could
-    // no longer be configured there together.
-    const config = parseJsonc(wranglerConfig) as Record<string, unknown>;
-    expect(config).not.toHaveProperty('secrets');
+describe('parseAdminPubkey', () => {
+  it('accepts a lowercase 64-character hex public key', () => {
+    expect(parseAdminPubkey(PUBKEY_ONE)).toBe(PUBKEY_ONE);
   });
 
-  it('keeps configuration values out of the repository', () => {
-    const config = parseJsonc(wranglerConfig) as Record<string, unknown>;
-    expect(config).not.toHaveProperty('vars');
-    expect(wranglerConfig).not.toContain('MASTER_ENCRYPTION_KEY');
-    expect(wranglerConfig).not.toContain('REMOTE_SIGNER_PRIVATE_KEY');
-    expect(wranglerConfig).not.toContain('ADMIN_PUBKEY');
-    // Local values belong in .dev.vars or .env, which are never committed.
-    const ignored = gitignore.split('\n');
-    expect(ignored).toContain('.dev.vars*');
-    expect(ignored).toContain('.env*');
-  });
-
-  it('types the deployment configuration as optional bindings', () => {
-    expectTypeOf<SignflareBindings>()
-      .toHaveProperty('ADMIN_PUBKEY')
-      .toEqualTypeOf<string | undefined>();
-    expectTypeOf<SignflareBindings>()
-      .toHaveProperty('MASTER_ENCRYPTION_KEY')
-      .toEqualTypeOf<string | undefined>();
-    expectTypeOf<SignflareBindings>()
-      .toHaveProperty('REMOTE_SIGNER_PRIVATE_KEY')
-      .toEqualTypeOf<string | undefined>();
-    expectTypeOf<SignflareBindings>().toExtend<Env>();
-    expectTypeOf<{
-      ADMIN_PUBKEY: string;
-      MASTER_ENCRYPTION_KEY: string;
-      REMOTE_SIGNER_PRIVATE_KEY: string;
-      SIGNER_HUB: Env['SIGNER_HUB'];
-      ASSETS: Env['ASSETS'];
-    }>().toExtend<SignflareBindings>();
+  it.each<[string, unknown]>([
+    ['a missing value', undefined],
+    ['the empty placeholder in wrangler.jsonc', ''],
+    ['a number', 12_345],
+    ['uppercase hex', PUBKEY_ONE.toUpperCase()],
+    ['63 characters', PUBKEY_ONE.slice(1)],
+    ['65 characters', `${PUBKEY_ONE}0`],
+    ['surrounding whitespace', ` ${PUBKEY_ONE}\n`],
+    ['an npub', npubEncode(PUBKEY_ONE)],
+  ])('rejects %s', (_case, value) => {
+    expect(parseAdminPubkey(value)).toBeNull();
   });
 });
 
