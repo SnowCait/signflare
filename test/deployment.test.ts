@@ -4,6 +4,7 @@ import gitignore from '../.gitignore?raw';
 import packageJson from '../package.json?raw';
 import readme from '../README.md?raw';
 import { parseAdminPubkey, parseMasterEncryptionKey } from '../src/config';
+import { DEPLOY_TO_CLOUDFLARE_URL } from '../src/landing-page';
 import { InvalidPrivateKeyError, parsePrivateKey } from '../src/private-key';
 import type { SignerHub } from '../src/signer-hub';
 import {
@@ -13,10 +14,12 @@ import {
 
 // The deployment configuration model (docs/design.md §7, §36): wrangler.jsonc
 // declares every binding and holds no real value, the generated Env types
-// them, and .dev.vars.example names the secrets for Deploy to Cloudflare.
+// them, .dev.vars.example names the secrets for Deploy to Cloudflare, and
+// package.json describes each value to set.
 
 interface PackageJson {
   scripts: Record<string, string>;
+  cloudflare: { bindings: Record<string, { description: string }> };
 }
 
 // Every binding of the Worker and the SignerHub.
@@ -60,6 +63,19 @@ function ignoredByGit(name: string): boolean {
     }
   }
   return ignored;
+}
+
+// The anchors GitHub gives the headings of a Markdown document.
+function headingAnchors(markdown: string): Set<string> {
+  return new Set(
+    [...markdown.matchAll(/^#{1,6} +(.+)$/gm)].map(([, heading]) =>
+      heading
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N} _-]/gu, '')
+        .replace(/ /g, '-'),
+    ),
+  );
 }
 
 const pkg = JSON.parse(packageJson) as PackageJson;
@@ -165,6 +181,47 @@ describe('.gitignore', () => {
 
   it('tracks .dev.vars.example', () => {
     expect(ignoredByGit('.dev.vars.example')).toBe(false);
+  });
+});
+
+describe('Deploy to Cloudflare', () => {
+  it('describes every configuration value', () => {
+    const descriptions = pkg.cloudflare.bindings;
+    expect(Object.keys(descriptions).toSorted()).toEqual(
+      [...Object.keys(config.vars), ...config.secrets.required].toSorted(),
+    );
+    for (const { description } of Object.values(descriptions)) {
+      expect(description).toEqual(expect.any(String));
+      expect(description.length).toBeGreaterThan(0);
+    }
+    expect(descriptions.ADMIN_PUBKEY.description).toMatch(/64 lowercase hex/);
+    expect(descriptions.MASTER_ENCRYPTION_KEY.description).toMatch(
+      /at least 32 bytes/,
+    );
+    expect(descriptions.REMOTE_SIGNER_PRIVATE_KEY.description).toMatch(
+      /NIP-46/,
+    );
+  });
+
+  it('links each description to a section of the README', () => {
+    const anchors = headingAnchors(readme);
+    for (const { description } of Object.values(pkg.cloudflare.bindings)) {
+      const links = [
+        ...description.matchAll(
+          /\(https:\/\/github\.com\/SnowCait\/signflare#([^)]+)\)/g,
+        ),
+      ];
+      expect(links.length, description).toBeGreaterThan(0);
+      for (const [, anchor] of links) {
+        expect(anchors, anchor).toContain(anchor);
+      }
+    }
+  });
+
+  it('has its button in the README', () => {
+    expect(readme).toContain(
+      `[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](${DEPLOY_TO_CLOUDFLARE_URL})`,
+    );
   });
 });
 
