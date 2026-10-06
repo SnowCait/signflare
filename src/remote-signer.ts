@@ -21,6 +21,10 @@ export class RemoteSignerConfigurationError extends Error {
   }
 }
 
+// A callback result that is not a promise. Callbacks returning one do not
+// type-check, since they would still be running when the key is overwritten.
+type Synchronous<T> = T extends PromiseLike<unknown> ? never : T;
+
 // Parses REMOTE_SIGNER_PRIVATE_KEY, an nsec or a 64-character hex private key,
 // and passes the key to `use`. The secret key bytes are overwritten, as a best
 // effort, as soon as `use` returns or throws, so `use` must neither keep them
@@ -30,7 +34,7 @@ export class RemoteSignerConfigurationError extends Error {
 // Throws RemoteSignerConfigurationError.
 export function withRemoteSignerKey<T>(
   value: unknown,
-  use: (key: RemoteSignerKey) => T,
+  use: (key: RemoteSignerKey) => Synchronous<T>,
 ): T {
   let key: RemoteSignerKey;
   try {

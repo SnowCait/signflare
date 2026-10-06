@@ -14,6 +14,7 @@ import { migrate } from './migrations';
 import * as pairings from './pairings';
 import type { CreatePairingResult, PairingPermissionsInput } from './pairings';
 import { InvalidPrivateKeyError } from './private-key';
+import * as relay from './relay';
 import * as sessions from './sessions';
 import type {
   EstablishSessionResult,
@@ -48,6 +49,52 @@ export class SignerHub extends DurableObject<SignflareBindings> {
     void ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage);
     });
+  }
+
+  // The NIP-46 relay endpoint (docs/design.md §17). WebSockets are accepted
+  // through the Hibernation API, so they stay connected while this object is
+  // evicted, and whatever a connection needs afterwards is in its attachment.
+  async fetch(request: Request): Promise<Response> {
+    if (!relay.isWebSocketUpgrade(request)) {
+      return new Response('Expected a WebSocket upgrade', {
+        status: 426,
+        headers: { Upgrade: 'websocket' },
+      });
+    }
+    const { 0: client, 1: server } = new WebSocketPair();
+    this.ctx.acceptWebSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async webSocketMessage(
+    ws: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> {
+    await relay.handleMessage(this.ctx, this.env, ws, message);
+  }
+
+  // Completes the close handshake that the client started. Where the
+  // web_socket_auto_reply_to_close compatibility flag has done so already, the
+  // socket is CLOSED by now. The subscriptions of the connection go with its
+  // attachment, so nothing else is left to clean up.
+  webSocketClose(ws: WebSocket, code: number): void {
+    if (ws.readyState !== WebSocket.CLOSING) {
+      return;
+    }
+    try {
+      ws.close(code);
+    } catch {
+      // Codes such as 1005 only describe a close and cannot be sent back.
+      ws.close();
+    }
+  }
+
+  webSocketError(_ws: WebSocket, error: unknown): void {
+    // Only the name is logged: messages could carry connection data.
+    console.error(
+      'Relay WebSocket error:',
+      error instanceof Error ? error.name : typeof error,
+    );
   }
 
   createAdminSession(login: AdminLogin): AdminLoginResult {

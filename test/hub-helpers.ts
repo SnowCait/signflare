@@ -102,8 +102,17 @@ export function recordingMasterKeyReads<T extends object>(
   target: T,
   reads: string[],
 ): T {
+  return recordingReads(target, ['MASTER_ENCRYPTION_KEY'], reads);
+}
+
+// An env that records every read of one of `names` into `reads`.
+export function recordingReads<T extends object>(
+  target: T,
+  names: readonly string[],
+  reads: string[],
+): T {
   const record = (key: PropertyKey) => {
-    if (key === 'MASTER_ENCRYPTION_KEY') {
+    if (typeof key === 'string' && names.includes(key)) {
       reads.push(key);
     }
   };
