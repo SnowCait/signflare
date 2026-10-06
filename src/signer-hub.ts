@@ -5,6 +5,8 @@ import type {
   AdminLoginResult,
   AdminSession,
 } from './admin-sessions';
+import * as adminStatus from './admin-status';
+import type { AdminStatus } from './admin-status';
 import { parseMasterEncryptionKey, type SignflareBindings } from './config';
 import * as identities from './identities';
 import type { IdentityMetadata } from './identities';
@@ -67,6 +69,13 @@ export class SignerHub extends DurableObject<SignflareBindings> {
 
   deleteAdminSession(tokenHash: Uint8Array): boolean {
     return adminSessions.deleteAdminSession(this.ctx.storage.sql, tokenHash);
+  }
+
+  // Read-only and independent of MASTER_ENCRYPTION_KEY and
+  // REMOTE_SIGNER_PRIVATE_KEY, so it works when storage is full or those
+  // secrets are missing.
+  getAdminStatus(now: number): AdminStatus {
+    return adminStatus.getAdminStatus(this.ctx.storage.sql, now);
   }
 
   // MASTER_ENCRYPTION_KEY is read here rather than taken as an argument, so it
