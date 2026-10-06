@@ -698,6 +698,30 @@ describe('session operations', () => {
     expect(await hub.listSessions(randomKey().pubkey)).toEqual([]);
   });
 
+  it('tell an identity without sessions from an unknown identity', async () => {
+    const hub = freshHub();
+    const identity = await addIdentity(hub);
+    const other = await addIdentity(hub);
+    expect(await hub.listIdentitySessions(identity)).toEqual({
+      status: 'found',
+      sessions: [],
+    });
+    const second = await connected(hub, identity, NOW + 20);
+    const first = await connected(hub, identity, NOW + 10);
+    await connected(hub, other, NOW + 15);
+
+    expect(await hub.listIdentitySessions(identity)).toEqual({
+      status: 'found',
+      sessions: [first, second],
+    });
+    expect(await hub.listIdentitySessions(randomKey().pubkey)).toEqual({
+      status: 'identity_not_found',
+    });
+    expect(await hub.listIdentitySessions(first.clientPubkey)).toEqual({
+      status: 'identity_not_found',
+    });
+  });
+
   it('list only public session data', async () => {
     const hub = freshHub();
     const identity = await addIdentity(hub);

@@ -31,6 +31,10 @@ export type RegisterIdentityResult =
   // MASTER_ENCRYPTION_KEY is missing or shorter than 32 bytes.
   | { readonly status: 'configuration_error' };
 
+export type ListIdentitySessionsResult =
+  | { readonly status: 'found'; readonly sessions: Session[] }
+  | { readonly status: 'identity_not_found' };
+
 export function getSignerHub(env: Env): DurableObjectStub<SignerHub> {
   return env.SIGNER_HUB.getByName(SIGNER_HUB_NAME);
 }
@@ -137,6 +141,21 @@ export class SignerHub extends DurableObject<SignflareBindings> {
     return sessions.listSessions(this.ctx.storage.sql, identityPubkey);
   }
 
+  // Tells an identity without sessions from an unknown identity. Both reads
+  // run synchronously, so no deletion can interleave between them.
+  listIdentitySessions(identityPubkey: string): ListIdentitySessionsResult {
+    const { sql } = this.ctx.storage;
+    if (!identities.identityExists(sql, identityPubkey)) {
+      return { status: 'identity_not_found' };
+    }
+    return {
+      status: 'found',
+      sessions: sessions.listSessions(sql, identityPubkey),
+    };
+  }
+
+  // Uses only a DELETE statement, so revocation keeps working when storage is
+  // full (docs/design.md §32).
   revokeSession(clientPubkey: string): boolean {
     return sessions.revokeSession(this.ctx.storage.sql, clientPubkey);
   }

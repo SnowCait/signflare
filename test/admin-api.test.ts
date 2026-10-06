@@ -16,8 +16,12 @@ import {
 } from '../src/admin-api';
 import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
-import type { CreatePairingResult } from '../src/pairings';
+import type {
+  CreatePairingResult,
+  PairingPermissionsInput,
+} from '../src/pairings';
 import { withDecryptedPrivateKey } from '../src/private-key-encryption';
+import type { Session, SessionRequest } from '../src/sessions';
 import type { SignerHub } from '../src/signer-hub';
 import {
   allStoredValues,
@@ -436,8 +440,8 @@ async function pairWith(
 async function connectClient(
   hub: DurableObjectStub<SignerHub>,
   identity: string,
+  clientPubkey = randomKey().pubkey,
 ): Promise<string> {
-  const clientPubkey = randomKey().pubkey;
   const result = await hub.establishSession({
     secret: await pairWith(hub, identity),
     clientPubkey,
@@ -644,6 +648,55 @@ function expectNoSecretIn(
       expect(value).not.toContain(secret);
     }
   }
+}
+
+function sessionsUrl(identity: string): string {
+  return `${IDENTITIES_URL}/${identity}/sessions`;
+}
+
+function getSessions(
+  d: Deployment,
+  identity: string,
+  token?: string,
+  options: RequestOptions = {},
+): Promise<Response> {
+  return send(d.env, sessionsUrl(identity), { token, ...options });
+}
+
+function deleteSession(
+  d: Deployment,
+  clientPubkey: string,
+  token?: string,
+  options: RequestOptions = {},
+): Promise<Response> {
+  return send(d.env, `${ORIGIN}/admin/api/sessions/${clientPubkey}`, {
+    method: 'DELETE',
+    token,
+    ...options,
+  });
+}
+
+type ClientSessionRow = {
+  client_pubkey: string;
+  identity_pubkey: string;
+  permissions: string;
+  client_name: string | null;
+  client_url: string | null;
+  client_image: string | null;
+  created_at: number;
+  last_used_at: number;
+};
+
+function sessionRows(
+  hub: DurableObjectStub<SignerHub>,
+): Promise<ClientSessionRow[]> {
+  return runInDurableObject(hub, (_instance, state) =>
+    state.storage.sql
+      .exec<ClientSessionRow>(
+        'SELECT * FROM sessions ORDER BY created_at, client_pubkey',
+      )
+      .toArray(),
+  );
 }
 
 afterEach(() => {
@@ -2136,18 +2189,24 @@ describe('identity management on full storage', () => {
   });
 });
 
-describe('identity and pairing endpoint protection', () => {
+describe('identity, pairing, and session endpoint protection', () => {
   type IdentityRequest = (
     d: Deployment,
     token: string | undefined,
     options?: RequestOptions,
   ) => Promise<Response>;
 
-  const endpoints: [string, IdentityRequest][] = [
+  const readOnly: [string, IdentityRequest][] = [
     [
       'GET /admin/api/identities',
       (d, token, options) => getIdentities(d, token, options),
     ],
+    [
+      'GET /admin/api/identities/:pubkey/sessions',
+      (d, token, options) => getSessions(d, PUBKEY_THREE, token, options),
+    ],
+  ];
+  const stateChanging: [string, IdentityRequest][] = [
     [
       'POST /admin/api/identities',
       (d, token, options) =>
@@ -2162,14 +2221,19 @@ describe('identity and pairing endpoint protection', () => {
       (d, token, options) =>
         postPairing(d, PUBKEY_THREE, token, pairingRequest('all'), options),
     ],
+    [
+      'DELETE /admin/api/sessions/:clientPubkey',
+      (d, token, options) => deleteSession(d, PUBKEY_ONE, token, options),
+    ],
   ];
-  const stateChanging = endpoints.slice(1);
+  const endpoints = [...readOnly, ...stateChanging];
 
-  // One identity that rejected requests must neither remove nor add to, and
-  // no pairing, which they must not create.
+  // One identity and one session that rejected requests must neither remove
+  // nor add to, and no pairing, which they must not create.
   async function guarded() {
     const { d, token } = await signedIn();
     await register(d, token, SECRET_THREE_HEX);
+    await connectClient(d.hub, PUBKEY_THREE, PUBKEY_ONE);
     return { d, token };
   }
 
@@ -2178,6 +2242,9 @@ describe('identity and pairing endpoint protection', () => {
       PUBKEY_THREE,
     ]);
     expect(await pairingRows(d.hub)).toEqual([]);
+    expect(
+      (await sessionRows(d.hub)).map(({ client_pubkey }) => client_pubkey),
+    ).toEqual([PUBKEY_ONE]);
   }
 
   it.each(endpoints)(
@@ -2259,6 +2326,22 @@ describe('identity and pairing endpoint protection', () => {
         [token],
       );
       await expectUnchanged(d);
+    },
+  );
+
+  it.each(readOnly)(
+    '%s does not require an Origin header',
+    async (_name, request) => {
+      const { d, token } = await guarded();
+      for (const origin of [null, 'https://evil.example']) {
+        const response = await request(d, token, { origin });
+        expect(response.status).toBe(200);
+        expect(
+          [...response.headers.keys()].filter((name) =>
+            name.startsWith('access-control-'),
+          ),
+        ).toEqual([]);
+      }
     },
   );
 
@@ -3177,10 +3260,12 @@ describe('pairing connection material', () => {
       await postPairing(d, identity, token, pairingRequest('all'), {
         origin: 'https://evil.example',
       }),
+      await getSessions(d, identity, token),
+      await deleteSession(d, randomKey().pubkey, token),
     ];
 
     expect(responses.map(({ status }) => status)).toEqual([
-      200, 200, 200, 201, 204, 401, 400, 404, 403,
+      200, 200, 200, 201, 204, 401, 400, 404, 403, 200, 404,
     ]);
     for (const response of responses) {
       expectNoSecretIn(response, await response.text(), [
@@ -3363,5 +3448,670 @@ describe('pairing endpoint errors', () => {
     expectSafeLogs(log, forbidden);
     vi.restoreAllMocks();
     expect(await pairingRows(d.hub)).toEqual([]);
+  });
+});
+
+// Establishes a session for `identity` through a new pairing, at `now`.
+async function establish(
+  hub: DurableObjectStub<SignerHub>,
+  identity: string,
+  request: Partial<SessionRequest> & { readonly now: number },
+  pairingPermissions: PairingPermissionsInput = 'all',
+): Promise<Session> {
+  const pairing = await hub.createPairing(
+    identity,
+    pairingPermissions,
+    request.now,
+  );
+  if (pairing.status !== 'created') {
+    throw new Error(pairing.status);
+  }
+  const result = await hub.establishSession({
+    secret: pairing.secret,
+    clientPubkey: randomKey().pubkey,
+    ...request,
+  });
+  if (result.status !== 'created') {
+    throw new Error(result.status);
+  }
+  return result.session;
+}
+
+async function listedClients(response: Response): Promise<string[]> {
+  expect(response.status).toBe(200);
+  const sessions: { clientPubkey: string }[] = await response.json();
+  return sessions.map(({ clientPubkey }) => clientPubkey);
+}
+
+const SESSION_RESPONSE_KEYS = [
+  'clientMetadata',
+  'clientPubkey',
+  'createdAt',
+  'lastUsedAt',
+  'permissions',
+];
+
+// Two identities with sessions: `identity` has `clients`, `other` has
+// `otherClient`. Neither has any pairing left.
+async function withSessions() {
+  const { d, token, identity, identityKey } = await withIdentity();
+  const otherKey = randomKey();
+  await register(d, token, bytesToHex(otherKey.secretKey));
+  const clients = [
+    await connectClient(d.hub, identity),
+    await connectClient(d.hub, identity),
+  ];
+  const otherClient = await connectClient(d.hub, otherKey.pubkey);
+  return {
+    d,
+    token,
+    identity,
+    identityKey,
+    other: otherKey.pubkey,
+    otherKey,
+    clients,
+    otherClient,
+  };
+}
+
+describe('GET /admin/api/identities/:pubkey/sessions', () => {
+  it('lists the sessions of the identity with their administrative metadata', async () => {
+    const { d, token, identity } = await withIdentity();
+    const other = randomKey();
+    await register(d, token, bytesToHex(other.secretKey));
+    const first = await establish(
+      d.hub,
+      identity,
+      {
+        now: T0,
+        requestedPermissions: 'nip44_encrypt,sign_event:1',
+        clientMetadata: {
+          name: 'Client',
+          url: 'https://example.com',
+          image: 'https://example.com/icon.png',
+        },
+      },
+      ['nip44_encrypt', 'sign_event:7', 'sign_event:1'],
+    );
+    await d.hub.touchSession(first.clientPubkey, T0 + 3600);
+    const second = await establish(d.hub, identity, { now: T0 + 10 });
+    await establish(d.hub, other.pubkey, { now: T0 + 5 });
+
+    const response = await getSessions(d, identity, token);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toMatch(/^application\/json/);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(await response.json()).toEqual([
+      {
+        clientPubkey: first.clientPubkey,
+        permissions: ['sign_event:1', 'nip44_encrypt'],
+        clientMetadata: {
+          name: 'Client',
+          url: 'https://example.com',
+          image: 'https://example.com/icon.png',
+        },
+        createdAt: T0,
+        lastUsedAt: T0 + 3600,
+      },
+      {
+        clientPubkey: second.clientPubkey,
+        permissions: ALL_EXPANDED,
+        clientMetadata: { name: null, url: null, image: null },
+        createdAt: T0 + 10,
+        lastUsedAt: T0 + 10,
+      },
+    ]);
+  });
+
+  it('returns an empty list for an identity without sessions', async () => {
+    const { d, token, identity } = await withIdentity();
+    const empty = async () => {
+      const response = await getSessions(d, identity, token);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('Cache-Control')).toBe('no-store');
+      expect(await response.json()).toEqual([]);
+    };
+
+    await empty();
+    // An unused pairing is not a session.
+    await pairWith(d.hub, identity);
+    await empty();
+    const clientPubkey = await connectClient(d.hub, identity);
+    expect(await d.hub.revokeSession(clientPubkey)).toBe(true);
+    await empty();
+  });
+
+  it('lists sessions oldest first, then by client pubkey', async () => {
+    const { d, token, identity } = await withIdentity();
+    const [a, b, c] = ['aa', 'bb', 'cc'].map((byte) => byte.repeat(32));
+    await establish(d.hub, identity, { now: T0 + 10, clientPubkey: c });
+    await establish(d.hub, identity, { now: T0 + 20, clientPubkey: a });
+    await establish(d.hub, identity, { now: T0 + 10, clientPubkey: b });
+
+    for (let i = 0; i < 2; i++) {
+      expect(
+        await listedClients(await getSessions(d, identity, token)),
+      ).toEqual([b, c, a]);
+    }
+  });
+
+  it('keeps the order in which the SignerHub lists the sessions', async () => {
+    const { d, token, identity } = await withIdentity();
+    const later = await establish(d.hub, identity, { now: T0 + 20 });
+    const earlier = await establish(d.hub, identity, { now: T0 + 10 });
+    const reversed = withSignerHub(
+      d,
+      stubNamespace(d.hub, {
+        overrides: {
+          listIdentitySessions: async () => ({
+            status: 'found',
+            sessions: [later, earlier],
+          }),
+        },
+      }),
+    );
+
+    expect(
+      await listedClients(await getSessions(reversed, identity, token)),
+    ).toEqual([later.clientPubkey, earlier.clientPubkey]);
+  });
+
+  it('returns stored client metadata as given, without acting on it', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch');
+    const { d, token, identity } = await withIdentity();
+    const clientMetadata = {
+      name: '<script>alert(1)</script>',
+      url: 'javascript:alert(1)',
+      image: ' http://192.0.2.1/icon.png ',
+    };
+    const session = await establish(
+      d.hub,
+      identity,
+      { now: T0, clientMetadata },
+      ['nip44_encrypt'],
+    );
+
+    const response = await getSessions(d, identity, token);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      {
+        clientPubkey: session.clientPubkey,
+        permissions: ['nip44_encrypt'],
+        clientMetadata,
+        createdAt: T0,
+        lastUsedAt: T0,
+      },
+    ]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for an identity that does not exist', async () => {
+    const { d, token, identity, clients } = await withSessions();
+    for (const unknown of [
+      randomKey().pubkey,
+      clients[0],
+      remoteSigner.pubkey,
+    ]) {
+      await expectError(
+        await getSessions(d, unknown, token),
+        404,
+        'not found',
+        [token],
+      );
+    }
+
+    expect((await deleteIdentity(d, identity, token)).status).toBe(204);
+    await expectError(await getSessions(d, identity, token), 404, 'not found', [
+      token,
+    ]);
+  });
+
+  it.each<[string, (pubkey: string) => string]>([
+    ['uppercase hex', (pubkey) => pubkey.toUpperCase()],
+    ['63 characters', (pubkey) => pubkey.slice(1)],
+    ['65 characters', (pubkey) => `${pubkey}0`],
+    ['an npub', (pubkey) => npubEncode(pubkey)],
+    ['non-hex characters', () => 'zz'.repeat(32)],
+    ['leading whitespace', (pubkey) => `%20${pubkey}`],
+    ['a trailing NUL', (pubkey) => `${pubkey}%00`],
+  ])('rejects a pubkey given as %s with 400', async (_case, malformed) => {
+    const { d, token, identity } = await withSessions();
+    const calls: [string, unknown[]][] = [];
+    const recorded = withSignerHub(d, stubNamespace(d.hub, { calls }));
+    await expectError(
+      await getSessions(recorded, malformed(identity), token),
+      400,
+      'invalid pubkey',
+      [token],
+    );
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+    ]);
+  });
+
+  it('exposes administrative session metadata only', async () => {
+    const log = captureLogs();
+    const { d, token, identity, identityKey } = await withIdentity();
+    const redeemed = await pairWith(d.hub, identity);
+    await d.hub.establishSession({
+      secret: redeemed,
+      clientPubkey: randomKey().pubkey,
+      clientMetadata: { name: 'Client' },
+      now: unixNow(),
+    });
+    const pending = await createdPairing(await postPairing(d, identity, token));
+    const [row] = await identityRows(d.hub);
+
+    const response = await getSessions(d, identity, token);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    const sessions = JSON.parse(text);
+    expect(sessions).toHaveLength(1);
+    expect(Object.keys(sessions[0]).sort()).toEqual(SESSION_RESPONSE_KEYS);
+    expectNoSecretIn(response, text, [
+      identity,
+      redeemed,
+      await sha256Hex(redeemed),
+      pending.pointer.secret,
+      await sha256Hex(pending.pointer.secret),
+      'bunker:',
+      ...privateKeyForms(identityKey.secretKey),
+      ...envelopeForms(row),
+      ...MASTER_KEY_FORMS,
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      token,
+      await tokenHash(token),
+    ]);
+    expect(loggedCalls(log)).toEqual([]);
+  });
+
+  it('is read-only and works when every write other than DELETE fails with SQLITE_FULL', async () => {
+    const { d, token, identity, clients } = await withSessions();
+    const statements: string[] = [];
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+      statements,
+    });
+
+    const response = await getSessions(d, identity, token);
+    expect(response.status).toBe(200);
+    expect(await listedClients(response)).toEqual(
+      (await d.hub.listSessions(identity)).map((s) => s.clientPubkey),
+    );
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      expect(statement).toMatch(/^(SELECT|DELETE) /);
+      expect(statement).not.toMatch(/^DELETE FROM (sessions|identities)\b/);
+      expect(statement).not.toMatch(/encrypted_private_key|kdf_salt/);
+    }
+    vi.restoreAllMocks();
+    expect((await sessionRows(d.hub)).map((s) => s.client_pubkey)).toEqual(
+      expect.arrayContaining(clients),
+    );
+  });
+
+  it('needs neither MASTER_ENCRYPTION_KEY nor REMOTE_SIGNER_PRIVATE_KEY', async () => {
+    const { d, token, identity, clients } = await withSessions();
+    await setMasterEncryptionKey(d.hub, undefined);
+    const workerReads: string[] = [];
+    const hubReads: string[] = [];
+    await replaceHubEnv(d.hub, (hubEnv) =>
+      recordingMasterKeyReads(hubEnv, hubReads),
+    );
+    const recorded: Deployment = {
+      ...d,
+      env: recordingMasterKeyReads(
+        withRemoteSignerPrivateKey(d, undefined).env,
+        workerReads,
+      ),
+    };
+
+    const response = await getSessions(recorded, identity, token);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toHaveLength(clients.length);
+    expect(workerReads).toEqual([]);
+    expect(hubReads).toEqual([]);
+  });
+
+  it('fails safely instead of listing altered stored permissions', async () => {
+    const log = captureLogs();
+    const { d, token, identity, clients } = await withSessions();
+    await runInDurableObject(d.hub, (_instance, state) => {
+      state.storage.sql.exec(
+        'UPDATE sessions SET permissions = ? WHERE client_pubkey = ?',
+        '["all"]',
+        clients[1],
+      );
+    });
+
+    await expectError(
+      await getSessions(d, identity, token),
+      500,
+      'internal error',
+      [token, '["all"]'],
+    );
+    expect(loggedCalls(log)).toEqual([
+      ['Admin API request failed:', 'MalformedPermissionsError'],
+    ]);
+    expectSafeLogs(log, [token, '["all"]']);
+  });
+});
+
+describe('DELETE /admin/api/sessions/:clientPubkey', () => {
+  it('revokes the session immediately', async () => {
+    const { d, token, identity, other, clients, otherClient } =
+      await withSessions();
+    const [revoked, kept] = clients;
+    const keptSession = await d.hub.getSession(kept);
+    const otherSession = await d.hub.getSession(otherClient);
+
+    const response = await deleteSession(d, revoked, token);
+    expect(response.status).toBe(204);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(await response.text()).toBe('');
+
+    expect(await d.hub.getSession(revoked)).toBeNull();
+    expect(await d.hub.touchSession(revoked, unixNow())).toBe(false);
+    expect(await d.hub.getSession(kept)).toEqual(keptSession);
+    expect(await d.hub.getSession(otherClient)).toEqual(otherSession);
+    expect(
+      (await sessionRows(d.hub)).map(({ client_pubkey }) => client_pubkey),
+    ).not.toContain(revoked);
+    expect(await relatedRows(d.hub, identity, other)).toEqual([
+      { identities: 1, pairings: 0, sessions: 1 },
+      { identities: 1, pairings: 0, sessions: 1 },
+    ]);
+    expect(await (await getSessions(d, identity, token)).json()).toMatchObject([
+      { clientPubkey: kept },
+    ]);
+
+    await expectError(await deleteSession(d, revoked, token), 404, 'not found');
+  });
+
+  it('requires a new pairing before the client can connect again', async () => {
+    const { d, token, identity } = await withIdentity();
+    const secret = await pairWith(d.hub, identity);
+    const clientPubkey = randomKey().pubkey;
+    await d.hub.establishSession({ secret, clientPubkey, now: unixNow() });
+
+    expect((await deleteSession(d, clientPubkey, token)).status).toBe(204);
+    expect(
+      await d.hub.establishSession({ secret, clientPubkey, now: unixNow() }),
+    ).toEqual({ status: 'invalid_secret' });
+    expect(
+      await d.hub.establishSession({
+        secret: await pairWith(d.hub, identity),
+        clientPubkey,
+        now: unixNow(),
+      }),
+    ).toMatchObject({ status: 'created', session: { clientPubkey } });
+  });
+
+  it('accepts a same-origin request', async () => {
+    const { d, token, clients } = await withSessions();
+    const response = await deleteSession(d, clients[0], token, {
+      origin: ORIGIN,
+    });
+    expect(response.status).toBe(204);
+    expect(await d.hub.getSession(clients[0])).toBeNull();
+  });
+
+  it('returns 404 for a session that does not exist', async () => {
+    const { d, token, identity, other } = await withSessions();
+    const before = await sessionRows(d.hub);
+    for (const unknown of [randomKey().pubkey, identity, other]) {
+      await expectError(
+        await deleteSession(d, unknown, token),
+        404,
+        'not found',
+        [token],
+      );
+    }
+    expect(await sessionRows(d.hub)).toEqual(before);
+    expect(await relatedRows(d.hub, identity, other)).toEqual([
+      { identities: 1, pairings: 0, sessions: 2 },
+      { identities: 1, pairings: 0, sessions: 1 },
+    ]);
+  });
+
+  it.each<[string, (pubkey: string) => string]>([
+    ['uppercase hex', (pubkey) => pubkey.toUpperCase()],
+    ['63 characters', (pubkey) => pubkey.slice(1)],
+    ['65 characters', (pubkey) => `${pubkey}0`],
+    ['an npub', (pubkey) => npubEncode(pubkey)],
+    ['non-hex characters', () => 'zz'.repeat(32)],
+    ['leading whitespace', (pubkey) => `%20${pubkey}`],
+    ['a trailing NUL', (pubkey) => `${pubkey}%00`],
+  ])('rejects a pubkey given as %s with 400', async (_case, malformed) => {
+    const { d, token, clients } = await withSessions();
+    const before = await sessionRows(d.hub);
+    await expectError(
+      await deleteSession(d, malformed(clients[0]), token),
+      400,
+      'invalid pubkey',
+      [token],
+    );
+    expect(await sessionRows(d.hub)).toEqual(before);
+  });
+
+  it('needs neither MASTER_ENCRYPTION_KEY nor REMOTE_SIGNER_PRIVATE_KEY', async () => {
+    const { d, token, clients } = await withSessions();
+    await setMasterEncryptionKey(d.hub, undefined);
+    const workerReads: string[] = [];
+    const hubReads: string[] = [];
+    await replaceHubEnv(d.hub, (hubEnv) =>
+      recordingMasterKeyReads(hubEnv, hubReads),
+    );
+    const recorded: Deployment = {
+      ...d,
+      env: recordingMasterKeyReads(
+        withRemoteSignerPrivateKey(d, undefined).env,
+        workerReads,
+      ),
+    };
+
+    expect((await deleteSession(recorded, clients[0], token)).status).toBe(204);
+    expect(workerReads).toEqual([]);
+    expect(hubReads).toEqual([]);
+    expect(await d.hub.getSession(clients[0])).toBeNull();
+  });
+
+  it('works when every write other than DELETE fails with SQLITE_FULL', async () => {
+    const { d, token, identity, other, clients, otherClient } =
+      await withSessions();
+    const statements: string[] = [];
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+      statements,
+    });
+
+    expect((await deleteSession(d, clients[0], token)).status).toBe(204);
+    expect(statements).toContainEqual(
+      expect.stringMatching(/^DELETE FROM sessions WHERE client_pubkey = \?/),
+    );
+    for (const statement of statements) {
+      expect(statement).toMatch(/^(SELECT|DELETE) /);
+    }
+    vi.restoreAllMocks();
+    expect(await d.hub.getSession(clients[0])).toBeNull();
+    expect(
+      (await sessionRows(d.hub)).map(({ client_pubkey }) => client_pubkey),
+    ).toEqual(expect.arrayContaining([clients[1], otherClient]));
+    expect(await relatedRows(d.hub, identity, other)).toEqual([
+      { identities: 1, pairings: 0, sessions: 1 },
+      { identities: 1, pairings: 0, sessions: 1 },
+    ]);
+  });
+
+  it('does not need to read the stored permissions', async () => {
+    const { d, token, clients } = await withSessions();
+    await runInDurableObject(d.hub, (_instance, state) => {
+      state.storage.sql.exec(
+        'UPDATE sessions SET permissions = ? WHERE client_pubkey = ?',
+        '["all"]',
+        clients[0],
+      );
+    });
+
+    expect((await deleteSession(d, clients[0], token)).status).toBe(204);
+    expect(
+      (await sessionRows(d.hub)).map(({ client_pubkey }) => client_pubkey),
+    ).not.toContain(clients[0]);
+  });
+});
+
+describe('session management on full storage', () => {
+  it('stays usable through an admin session that predates it', async () => {
+    const log = captureLogs();
+    const { d, token, identity, clients } = await withSessions();
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+    });
+
+    // Logging in needs a write, so a new admin session cannot be counted on.
+    expect((await postLogin(d, uniqueLoginEvent(admin))).status).toBe(507);
+    expect((await getSessions(d, identity, token)).status).toBe(200);
+    expect((await deleteSession(d, clients[0], token)).status).toBe(204);
+    expect(await listedClients(await getSessions(d, identity, token))).toEqual([
+      clients[1],
+    ]);
+    expect(loggedCalls(log)).toEqual([]);
+  });
+});
+
+describe('session endpoint errors', () => {
+  type Scenario = (
+    d: Deployment,
+    token: string,
+    context: { identity: string; clientPubkey: string },
+  ) => Promise<[Response, string[]]>;
+
+  const unexpected = (method: string): Scenario => {
+    return async (d, token, { identity, clientPubkey }) => {
+      const detail = [
+        'SQLITE_ERROR: SELECT * FROM sessions failed',
+        bytesToHex(remoteSigner.secretKey),
+        REMOTE_SIGNER_NSEC,
+        TEST_MASTER_ENCRYPTION_KEY,
+        `    at ${method} (src/sessions.ts:1:1)`,
+      ].join('\n');
+      const failing = withSignerHub(
+        d,
+        stubNamespace(d.hub, {
+          overrides: { [method]: () => Promise.reject(new Error(detail)) },
+        }),
+      );
+      return [
+        method === 'revokeSession'
+          ? await deleteSession(failing, clientPubkey, token)
+          : await getSessions(failing, identity, token),
+        [detail, 'SQLITE_ERROR'],
+      ];
+    };
+  };
+
+  it.each<[string, number, string, unknown[][], Scenario]>([
+    [
+      'a malformed identity pubkey',
+      400,
+      'invalid pubkey',
+      [],
+      async (d, token, { identity }) => [
+        await getSessions(d, npubEncode(identity), token),
+        [],
+      ],
+    ],
+    [
+      'an unknown identity',
+      404,
+      'not found',
+      [],
+      async (d, token) => [await getSessions(d, randomKey().pubkey, token), []],
+    ],
+    [
+      'an unexpected listing failure',
+      500,
+      'internal error',
+      [['Admin API request failed:', 'Error']],
+      unexpected('listIdentitySessions'),
+    ],
+    [
+      'a malformed client pubkey',
+      400,
+      'invalid pubkey',
+      [],
+      async (d, token, { clientPubkey }) => [
+        await deleteSession(d, clientPubkey.toUpperCase(), token),
+        [],
+      ],
+    ],
+    [
+      'an unknown session',
+      404,
+      'not found',
+      [],
+      async (d, token) => [
+        await deleteSession(d, randomKey().pubkey, token),
+        [],
+      ],
+    ],
+    [
+      'a revocation without an Origin header',
+      403,
+      'forbidden',
+      [],
+      async (d, token, { clientPubkey }) => [
+        await deleteSession(d, clientPubkey, token, { origin: null }),
+        [],
+      ],
+    ],
+    [
+      'an unexpected revocation failure',
+      500,
+      'internal error',
+      [['Admin API request failed:', 'Error']],
+      unexpected('revokeSession'),
+    ],
+  ])('leak nothing on %s', async (_case, status, error, logged, scenario) => {
+    const { d, token, identity, identityKey } = await withIdentity();
+    const secret = await pairWith(d.hub, identity);
+    const clientPubkey = randomKey().pubkey;
+    await d.hub.establishSession({ secret, clientPubkey, now: unixNow() });
+    const pending = await pairWith(d.hub, identity);
+    const [row] = await identityRows(d.hub);
+    const log = captureLogs();
+    const [response, extra] = await scenario(d, token, {
+      identity,
+      clientPubkey,
+    });
+    const forbidden = [
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      ...privateKeyForms(identityKey.secretKey),
+      ...envelopeForms(row),
+      ...MASTER_KEY_FORMS,
+      secret,
+      await sha256Hex(secret),
+      pending,
+      await sha256Hex(pending),
+      token,
+      await tokenHash(token),
+      'bunker:',
+      ...extra,
+    ];
+
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.clone().text()).not.toMatch(SQL_DETAILS);
+    await expectError(response, status, error, forbidden);
+    expect(loggedCalls(log)).toEqual(logged);
+    expectSafeLogs(log, forbidden);
+    vi.restoreAllMocks();
+    expect(await d.hub.getSession(clientPubkey)).not.toBeNull();
   });
 });
