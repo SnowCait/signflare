@@ -66,7 +66,8 @@
               <dt>Permissions</dt>
               <dd>
                 {#if session.permissions.length === 0}
-                  None: the client can only get the public key and ping.
+                  None: no signing, encryption, or decryption permissions.
+                  Control methods remain available.
                 {:else}
                   <ul class="permissions">
                     {#each session.permissions as permission (permission)}

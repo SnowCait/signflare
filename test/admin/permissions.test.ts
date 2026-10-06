@@ -81,12 +81,14 @@ describe('pairingPermissions', () => {
     ).toEqual({ ok: true, permissions: ['nip04_encrypt'] });
   });
 
-  it('allows an empty selection, as the server does', () => {
-    expect(pairingPermissions(explicit([], ' , '))).toEqual({
-      ok: true,
-      permissions: [],
-    });
-    expect(parsePairingPermissions([])).toEqual([]);
+  it('allows an empty selection, which the server accepts as no grant', () => {
+    const result = pairingPermissions(explicit([], ' , '));
+    expect(result).toEqual({ ok: true, permissions: [] });
+    if (result.ok) {
+      // No sign_event, NIP-04, or NIP-44 permission. The control methods of
+      // docs/design.md §16.2 need none.
+      expect(parsePairingPermissions(result.permissions)).toEqual([]);
+    }
   });
 
   it.each([
@@ -117,6 +119,7 @@ describe('pairingPermissions', () => {
       explicit([...PERMISSION_METHODS], '1'),
       explicit(['nip04_encrypt', 'nip44_decrypt'], '0, 7, 65535'),
       explicit([], '30023'),
+      explicit([]),
     ];
     for (const selection of selections) {
       const result = pairingPermissions(selection);

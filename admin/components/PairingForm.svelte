@@ -103,8 +103,11 @@
         </p>
         {#if nothingSelected}
           <p class="hint">
-            With nothing selected, the client can only get the identity’s public
-            key and ping.
+            No signing, encryption, or decryption permissions are granted.
+            NIP-46 control methods (<code>ping</code>,
+            <code>get_public_key</code>,
+            <code>switch_relays</code>, and <code>logout</code>) remain
+            available once the client is connected.
           </p>
         {/if}
       </fieldset>

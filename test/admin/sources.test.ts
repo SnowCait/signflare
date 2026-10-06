@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import design from '../../docs/design.md?raw';
 
 // Properties of the Admin SPA's source that hold for every component,
 // including the Svelte ones that the other tests do not run
@@ -91,5 +92,67 @@ describe('Admin SPA sources', () => {
     )?.[0];
     expect(input).toContain('type="password"');
     expect(input).toContain('autocomplete="off"');
+  });
+});
+
+// Without explicit permissions, a session cannot sign, encrypt, or decrypt,
+// but the control methods of docs/design.md §16.2 need no permission.
+describe('descriptions of empty permissions', () => {
+  const section =
+    /### 16\.2 Control methods\n([\s\S]*?)\nThey still require/.exec(
+      design,
+    )?.[1] ?? '';
+  const methods = [...section.matchAll(/^- `(\w+)`$/gm)].map(
+    ([, method]) => method,
+  );
+
+  // Template markup with its line breaks and indentation collapsed.
+  function text(path: string, start: string, end: string): string {
+    const source = sources[`../../admin/components/${path}`];
+    const from = source.indexOf(start);
+    return source
+      .slice(from + start.length, source.indexOf(end, from))
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  it('reads the control methods from the design', () => {
+    expect(methods).toEqual([
+      'ping',
+      'get_public_key',
+      'switch_relays',
+      'logout',
+    ]);
+  });
+
+  it('never limit an empty grant to the public key and ping', () => {
+    for (const { path, text: source } of files) {
+      expect(source.replace(/\s+/g, ' '), path).not.toMatch(
+        /only get (the (identity’s )?)?public key and ping/,
+      );
+    }
+  });
+
+  it('keep the control methods available for an empty pairing selection', () => {
+    const hint = text('PairingForm.svelte', '{#if nothingSelected}', '{/if}');
+    expect(hint).toContain(
+      'No signing, encryption, or decryption permissions are granted.',
+    );
+    expect(hint).toContain('remain available once the client is connected');
+    for (const method of methods) {
+      expect(hint).toContain(`<code>${method}</code>`);
+    }
+  });
+
+  it('tell an empty stored grant apart from having no methods', () => {
+    expect(
+      text(
+        'SessionList.svelte',
+        '{#if session.permissions.length === 0}',
+        '{:else}',
+      ),
+    ).toBe(
+      'None: no signing, encryption, or decryption permissions. Control methods remain available.',
+    );
   });
 });
