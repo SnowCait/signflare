@@ -97,6 +97,14 @@ export function setMasterEncryptionKey(
   });
 }
 
+// `workerEnv` without the binding `name`. The generated Env types every
+// configured value as present, but a deployment can still lack one.
+export function withoutBinding(workerEnv: Env, name: keyof Env): Env {
+  const remaining: Partial<Env> = { ...workerEnv };
+  delete remaining[name];
+  return remaining as Env;
+}
+
 // An env that records every read of MASTER_ENCRYPTION_KEY into `reads`.
 export function recordingMasterKeyReads<T extends object>(
   target: T,

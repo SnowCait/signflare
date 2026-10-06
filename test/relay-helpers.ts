@@ -5,7 +5,6 @@ import * as nip44 from 'nostr-tools/nip44';
 import { finalizeEvent, type NostrEvent } from 'nostr-tools/pure';
 import { bytesToHex } from 'nostr-tools/utils';
 import { expect } from 'vitest';
-import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
 import type { PairingPermissionsInput } from '../src/pairings';
 import type { SignerHub } from '../src/signer-hub';
@@ -24,7 +23,7 @@ const BARRIER_NOTICE = ['NOTICE', 'invalid: unsupported message type'];
 export interface Relay {
   readonly hub: Hub;
   // A Worker env whose SIGNER_HUB always resolves to `hub`.
-  readonly env: SignflareBindings;
+  readonly env: Env;
   // The test-only REMOTE_SIGNER_PRIVATE_KEY of the deployment, generated for
   // the test and distinct from every identity.
   readonly remoteSigner: TestKey;

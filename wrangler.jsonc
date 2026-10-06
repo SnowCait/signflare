@@ -3,6 +3,24 @@
   "name": "signflare",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
+  // Deployment configuration (docs/design.md §7). This file declares every
+  // name, so that `wrangler types` can generate them, but no real value.
+  //
+  // ADMIN_PUBKEY is public: the administrator's Nostr public key as 64
+  // lowercase hex characters. Each deployment replaces the empty placeholder
+  // in its own copy of this file, or when deploying with Deploy to
+  // Cloudflare. This file stays the source of truth (keep_vars is not set),
+  // so a value changed only in the Cloudflare dashboard is replaced on the
+  // next deploy. Locally, the value in .dev.vars overrides it.
+  "vars": {
+    "ADMIN_PUBKEY": "",
+  },
+  // Worker secrets. Their values are set on the deployed Worker, and
+  // wrangler deploy fails while either is missing. Locally, only these names
+  // and the vars above are read from .dev.vars or .env.
+  "secrets": {
+    "required": ["MASTER_ENCRYPTION_KEY", "REMOTE_SIGNER_PRIVATE_KEY"],
+  },
   // The Admin SPA (docs/design.md §31.1). The Cloudflare Vite plugin fills in
   // the directory with the client build output. Files that exist there are
   // served before the Worker runs; the Worker answers every other request and

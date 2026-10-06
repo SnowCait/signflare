@@ -2,15 +2,11 @@ import { MIN_MASTER_KEY_LENGTH } from './private-key-encryption';
 
 const PUBKEY = /^[0-9a-f]{64}$/;
 
-// Bindings of the Worker and the SignerHub. ADMIN_PUBKEY and the
-// MASTER_ENCRYPTION_KEY and REMOTE_SIGNER_PRIVATE_KEY secrets are set per
-// deployment and not declared in wrangler.jsonc, so the generated Env lacks
-// them and any of them may be missing at runtime.
-export type SignflareBindings = Env & {
-  ADMIN_PUBKEY?: string;
-  MASTER_ENCRYPTION_KEY?: string;
-  REMOTE_SIGNER_PRIVATE_KEY?: string;
-};
+// ADMIN_PUBKEY and the MASTER_ENCRYPTION_KEY and REMOTE_SIGNER_PRIVATE_KEY
+// secrets are declared in wrangler.jsonc, so the generated Env types them as
+// strings. Their values still come from each deployment: any of them may be
+// missing at runtime or malformed, like the empty ADMIN_PUBKEY placeholder,
+// so they are always parsed as unknown values.
 
 // ADMIN_PUBKEY is public deployment configuration (docs/design.md §7.3).
 // Returns null when it is missing or malformed so that callers can report a

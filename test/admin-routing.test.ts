@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import adminPage from '../admin/index.html?raw';
 import viteConfig from '../vite.config.ts?raw';
 import wranglerConfig from '../wrangler.jsonc?raw';
-import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
 import { ORIGIN, randomKey } from './nostr-helpers';
 
@@ -21,7 +20,7 @@ const NAVIGATION = {
 };
 
 interface AssetsStub {
-  readonly env: SignflareBindings;
+  readonly env: Env;
   // Method and URL of each request made through the ASSETS binding.
   readonly requests: string[];
   // Names used to reach the SignerHub.

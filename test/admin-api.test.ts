@@ -1,4 +1,4 @@
-import { env, exports } from 'cloudflare:workers';
+import { env } from 'cloudflare:workers';
 import { runInDurableObject } from 'cloudflare:test';
 import { npubEncode, nsecEncode } from 'nostr-tools/nip19';
 import {
@@ -14,7 +14,6 @@ import {
   MAX_LOGIN_BODY_BYTES,
   MAX_PAIRING_BODY_BYTES,
 } from '../src/admin-api';
-import type { SignflareBindings } from '../src/config';
 import app from '../src/index';
 import type {
   CreatePairingResult,
@@ -33,6 +32,7 @@ import {
   SQLITE_FULL_MESSAGE,
   TEST_MASTER_ENCRYPTION_KEY,
   valuesContainingSecret,
+  withoutBinding,
 } from './hub-helpers';
 import {
   encodeBase64,
@@ -46,6 +46,7 @@ import {
   type TestKey,
   unixNow,
 } from './nostr-helpers';
+import { wranglerConfig } from './wrangler-config';
 
 const COOKIE_NAME = '__Secure-signflare_admin_session';
 const SESSION_URL = `${ORIGIN}/admin/api/session`;
@@ -75,7 +76,7 @@ const remoteSigner = randomKey();
 const REMOTE_SIGNER_NSEC = nsecEncode(remoteSigner.secretKey);
 
 interface Deployment {
-  readonly env: SignflareBindings;
+  readonly env: Env;
   readonly hub: DurableObjectStub<SignerHub>;
   readonly hubNames: string[];
 }
@@ -107,9 +108,7 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
 
 function unconfiguredDeployment(): Deployment {
   const d = deployment();
-  const unconfigured: SignflareBindings = { ...d.env };
-  delete unconfigured.ADMIN_PUBKEY;
-  return { ...d, env: unconfigured };
+  return { ...d, env: withoutBinding(d.env, 'ADMIN_PUBKEY') };
 }
 
 function withAdminPubkey(d: Deployment, adminPubkey: string): Deployment {
@@ -128,7 +127,7 @@ interface RequestOptions {
 }
 
 async function send(
-  testEnv: SignflareBindings,
+  testEnv: Env,
   url: string,
   options: RequestOptions = {},
 ): Promise<Response> {
@@ -554,14 +553,13 @@ function postPairing(
 
 // undefined removes the secret.
 function withRemoteSignerPrivateKey(d: Deployment, value: unknown): Deployment {
-  const configured: SignflareBindings = {
-    ...d.env,
-    REMOTE_SIGNER_PRIVATE_KEY: value as string,
-  };
   if (value === undefined) {
-    delete configured.REMOTE_SIGNER_PRIVATE_KEY;
+    return { ...d, env: withoutBinding(d.env, 'REMOTE_SIGNER_PRIVATE_KEY') };
   }
-  return { ...d, env: configured };
+  return {
+    ...d,
+    env: { ...d.env, REMOTE_SIGNER_PRIVATE_KEY: value as string },
+  };
 }
 
 // A signed-in deployment with one registered identity to pair.
@@ -1444,18 +1442,13 @@ describe('ADMIN_PUBKEY configuration', () => {
     },
   );
 
-  it('is not configured by the repository', async () => {
+  it('is only a placeholder in the repository', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(env).not.toHaveProperty('ADMIN_PUBKEY');
-    const response = await exports.default.fetch(SESSION_URL);
+    // The value in wrangler.jsonc, which each deployment replaces.
+    const d = deployment(wranglerConfig.vars.ADMIN_PUBKEY);
+    const response = await getSession(d, 'ab'.repeat(32));
     await expectError(response, 500, 'server configuration error');
-    const login = await exports.default.fetch(LOGIN_URL, {
-      method: 'POST',
-      headers: {
-        Origin: ORIGIN,
-        Authorization: nostrAuthorization(signHttpAuthEvent(admin)),
-      },
-    });
+    const login = await postLogin(d, signHttpAuthEvent(admin));
     await expectError(login, 500, 'server configuration error');
     expect(log).toHaveBeenCalled();
   });

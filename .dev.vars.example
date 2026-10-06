@@ -1,0 +1,21 @@
+# The Worker secrets of a Signflare deployment (docs/design.md §7).
+#
+# For local development, copy this file to .dev.vars, which git ignores, and
+# replace each placeholder with a value of your own. See "Generate the
+# secrets" in README.md. Never commit real values.
+#
+# Deploy to Cloudflare reads the names in this file as the Worker's secrets.
+# Signflare rejects the placeholders as it rejects missing values, so the
+# requests that need them fail until they are replaced.
+
+# Root key material for encrypting registered identity private keys at rest.
+# A new random value of at least 32 bytes.
+MASTER_ENCRYPTION_KEY=replace-me
+
+# The deployment-wide NIP-46 remote-signer private key, as 64 hex characters
+# or an nsec. A new key, used for nothing else.
+REMOTE_SIGNER_PRIVATE_KEY=replace-me
+
+# Local development also needs the administrator's public key. It is not a
+# secret and lives in wrangler.jsonc for deployments, so add a line for
+# ADMIN_PUBKEY to your .dev.vars rather than to this file.
