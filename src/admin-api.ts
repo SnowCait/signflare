@@ -11,6 +11,7 @@ import {
   hashAdminSessionToken,
   isAdminSessionToken,
 } from './admin-sessions';
+import type { AdminStatus } from './admin-status';
 import { parseAdminPubkey, type SignflareBindings } from './config';
 import type { IdentityMetadata } from './identities';
 import {
@@ -179,6 +180,11 @@ adminApi.post('/logout', requireAdminSession, async (c) => {
   return c.body(null, 204);
 });
 
+adminApi.get('/status', requireAdminSession, async (c) => {
+  const status = await getSignerHub(c.env).getAdminStatus(unixNow());
+  return c.json(statusResponse(status));
+});
+
 adminApi.get('/identities', requireAdminSession, async (c) => {
   const identities = await getSignerHub(c.env).listIdentities();
   return c.json(identities.map(identityResponse));
@@ -308,6 +314,17 @@ adminApi.delete('/sessions/:clientPubkey', requireAdminSession, async (c) => {
 // Never includes the session token.
 function sessionResponse(session: AdminSession) {
   return { pubkey: session.adminPubkey, expiresAt: session.expiresAt };
+}
+
+// Counts and database size only. The remote-signer pubkey is left out
+// (docs/design.md §30.4).
+function statusResponse(status: AdminStatus) {
+  return {
+    identities: status.identities,
+    sessions: status.sessions,
+    pairings: status.pairings,
+    databaseSize: status.databaseSize,
+  };
 }
 
 // Public identity information only (docs/design.md §30.5, §30.6).

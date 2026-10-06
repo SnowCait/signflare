@@ -51,6 +51,7 @@ const COOKIE_NAME = '__Secure-signflare_admin_session';
 const SESSION_URL = `${ORIGIN}/admin/api/session`;
 const LOGOUT_URL = `${ORIGIN}/admin/api/logout`;
 const IDENTITIES_URL = `${ORIGIN}/admin/api/identities`;
+const STATUS_URL = `${ORIGIN}/admin/api/status`;
 const TWELVE_HOURS = 12 * 60 * 60;
 const T0 = 1_800_000_000;
 
@@ -697,6 +698,14 @@ function sessionRows(
       )
       .toArray(),
   );
+}
+
+function getStatus(
+  d: Deployment,
+  token?: string,
+  options: RequestOptions = {},
+): Promise<Response> {
+  return send(d.env, STATUS_URL, { token, ...options });
 }
 
 afterEach(() => {
@@ -2189,7 +2198,7 @@ describe('identity management on full storage', () => {
   });
 });
 
-describe('identity, pairing, and session endpoint protection', () => {
+describe('status, identity, pairing, and session endpoint protection', () => {
   type IdentityRequest = (
     d: Deployment,
     token: string | undefined,
@@ -2197,6 +2206,10 @@ describe('identity, pairing, and session endpoint protection', () => {
   ) => Promise<Response>;
 
   const readOnly: [string, IdentityRequest][] = [
+    [
+      'GET /admin/api/status',
+      (d, token, options) => getStatus(d, token, options),
+    ],
     [
       'GET /admin/api/identities',
       (d, token, options) => getIdentities(d, token, options),
@@ -4113,5 +4126,312 @@ describe('session endpoint errors', () => {
     expectSafeLogs(log, forbidden);
     vi.restoreAllMocks();
     expect(await d.hub.getSession(clientPubkey)).not.toBeNull();
+  });
+});
+
+const STATUS_RESPONSE_KEYS = [
+  'databaseSize',
+  'identities',
+  'pairings',
+  'sessions',
+];
+
+async function statusCounts(response: Response) {
+  expect(response.status).toBe(200);
+  const { identities, sessions, pairings } =
+    await response.json<Record<string, unknown>>();
+  return { identities, sessions, pairings };
+}
+
+function databaseSize(hub: DurableObjectStub<SignerHub>): Promise<number> {
+  return runInDurableObject(
+    hub,
+    (_instance, state) => state.storage.sql.databaseSize,
+  );
+}
+
+// A pairing whose expires_at is exactly `expiresAt`.
+async function pairingExpiringAt(
+  hub: DurableObjectStub<SignerHub>,
+  identity: string,
+  expiresAt: number,
+): Promise<void> {
+  const result = await hub.createPairing(identity, 'all', expiresAt - 600);
+  expect(result).toMatchObject({ status: 'created', pairing: { expiresAt } });
+}
+
+describe('GET /admin/api/status', () => {
+  it('reports an empty deployment', async () => {
+    const d = deployment();
+    const token = await logIn(d);
+
+    const response = await getStatus(d, token);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(response.headers.get('Content-Type')).toMatch(/^application\/json/);
+    expect(response.headers.getSetCookie()).toEqual([]);
+    const status = await response.json<Record<string, unknown>>();
+    expect(Object.keys(status).sort()).toEqual(STATUS_RESPONSE_KEYS);
+    expect(status).toMatchObject({ identities: 0, sessions: 0, pairings: 0 });
+    expect(typeof status.databaseSize).toBe('number');
+    expect(Number.isFinite(status.databaseSize)).toBe(true);
+    expect(status.databaseSize).toBeGreaterThanOrEqual(0);
+  });
+
+  it('follows identities, pairings, and sessions through their lifecycle', async () => {
+    const { d, token, identity } = await withIdentity();
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 0,
+      pairings: 0,
+    });
+
+    const first = await createdPairing(await postPairing(d, identity, token));
+    await createdPairing(await postPairing(d, identity, token));
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 0,
+      pairings: 2,
+    });
+
+    const clientPubkey = randomKey().pubkey;
+    const established = await d.hub.establishSession({
+      secret: first.pointer.secret,
+      clientPubkey,
+      now: unixNow(),
+    });
+    expect(established.status).toBe('created');
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 1,
+      pairings: 1,
+    });
+
+    expect((await deleteSession(d, clientPubkey, token)).status).toBe(204);
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 0,
+      pairings: 1,
+    });
+  });
+
+  it('reflects the sessions and pairings removed with a deleted identity', async () => {
+    const { d, token, identity, other } = await withSessions();
+    await pairWith(d.hub, identity);
+    await pairWith(d.hub, other);
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 2,
+      sessions: 3,
+      pairings: 2,
+    });
+
+    expect((await deleteIdentity(d, identity, token)).status).toBe(204);
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 1,
+      pairings: 1,
+    });
+  });
+
+  it('counts only unexpired pairings and leaves expired ones in place', async () => {
+    setNow(T0);
+    const { d, token, identity } = await withIdentity();
+    await pairingExpiringAt(d.hub, identity, T0 + 1);
+    await pairingExpiringAt(d.hub, identity, T0 + 2);
+    await pairingExpiringAt(d.hub, identity, T0 - 1);
+    await pairingExpiringAt(d.hub, identity, T0);
+    const before = await pairingRows(d.hub);
+    expect(before).toHaveLength(4);
+
+    expect((await statusCounts(await getStatus(d, token))).pairings).toBe(2);
+    setNow(T0 + 1);
+    expect((await statusCounts(await getStatus(d, token))).pairings).toBe(1);
+    setNow(T0 + 2);
+    expect((await statusCounts(await getStatus(d, token))).pairings).toBe(0);
+    expect(await pairingRows(d.hub)).toEqual(before);
+  });
+
+  it('asks the SignerHub with the current time in Unix seconds', async () => {
+    setNow(T0);
+    const { d, token } = await signedIn();
+    const calls: [string, unknown[]][] = [];
+    const recorded = withSignerHub(d, stubNamespace(d.hub, { calls }));
+
+    setNow(T0 + 5);
+    expect((await getStatus(recorded, token)).status).toBe(200);
+    expect(calls.map(([method]) => method)).toEqual([
+      'authenticateAdminSession',
+      'getAdminStatus',
+    ]);
+    expect(calls[1][1]).toEqual([T0 + 5]);
+  });
+
+  it('returns the database size of the SignerHub', async () => {
+    const { d, token, identity } = await withIdentity();
+    const empty = await getStatus(d, token);
+    expect((await empty.json<{ databaseSize: number }>()).databaseSize).toBe(
+      await databaseSize(d.hub),
+    );
+
+    await connectClient(d.hub, identity);
+    await pairWith(d.hub, identity);
+    const filled = await getStatus(d, token);
+    expect((await filled.json<{ databaseSize: number }>()).databaseSize).toBe(
+      await databaseSize(d.hub),
+    );
+  });
+
+  it('exposes counts and the database size only', async () => {
+    const log = captureLogs();
+    const { d, token, identity, identityKey } = await withIdentity();
+    const redeemed = await pairWith(d.hub, identity);
+    const clientPubkey = randomKey().pubkey;
+    await d.hub.establishSession({
+      secret: redeemed,
+      clientPubkey,
+      now: unixNow(),
+    });
+    const pending = await createdPairing(await postPairing(d, identity, token));
+    const [row] = await identityRows(d.hub);
+
+    const response = await getStatus(d, token);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(Object.keys(JSON.parse(text)).sort()).toEqual(STATUS_RESPONSE_KEYS);
+    const forbidden = [
+      identity,
+      npubEncode(identity),
+      clientPubkey,
+      admin.pubkey,
+      redeemed,
+      await sha256Hex(redeemed),
+      pending.pointer.secret,
+      await sha256Hex(pending.pointer.secret),
+      'bunker:',
+      ...privateKeyForms(identityKey.secretKey),
+      ...envelopeForms(row),
+      ...MASTER_KEY_FORMS,
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      token,
+      await tokenHash(token),
+    ];
+    expectNoSecretIn(response, text, forbidden);
+    expect(loggedCalls(log)).toEqual([]);
+  });
+
+  it('is read-only and works when every write other than DELETE fails with SQLITE_FULL', async () => {
+    const { d, token, identity } = await withSessions();
+    await pairWith(d.hub, identity);
+    const statements: string[] = [];
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+      statements,
+    });
+
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 2,
+      sessions: 3,
+      pairings: 1,
+    });
+    expect(statements.length).toBeGreaterThan(0);
+    for (const statement of statements) {
+      expect(statement).toMatch(/^SELECT /);
+      expect(statement).not.toMatch(/encrypted_private_key|kdf_salt/);
+    }
+  });
+
+  it('stays usable through an admin session that predates full storage', async () => {
+    const log = captureLogs();
+    const { d, token, identity } = await withSessions();
+    await instrumentHubSql(d.hub, {
+      failing: NON_DELETE_WRITE,
+      message: SQLITE_FULL_MESSAGE,
+    });
+
+    expect((await postLogin(d, uniqueLoginEvent(admin))).status).toBe(507);
+    expect((await getStatus(d, token)).status).toBe(200);
+    expect((await deleteIdentity(d, identity, token)).status).toBe(204);
+    expect(await statusCounts(await getStatus(d, token))).toEqual({
+      identities: 1,
+      sessions: 1,
+      pairings: 0,
+    });
+    expect(loggedCalls(log)).toEqual([]);
+  });
+
+  it('needs neither MASTER_ENCRYPTION_KEY nor REMOTE_SIGNER_PRIVATE_KEY', async () => {
+    const { d, token } = await withSessions();
+    await setMasterEncryptionKey(d.hub, undefined);
+    const workerReads: string[] = [];
+    const hubReads: string[] = [];
+    await replaceHubEnv(d.hub, (hubEnv) =>
+      recordingMasterKeyReads(hubEnv, hubReads),
+    );
+    const recorded: Deployment = {
+      ...d,
+      env: recordingMasterKeyReads(
+        withRemoteSignerPrivateKey(d, undefined).env,
+        workerReads,
+      ),
+    };
+
+    expect(await statusCounts(await getStatus(recorded, token))).toEqual({
+      identities: 2,
+      sessions: 3,
+      pairings: 0,
+    });
+    expect(workerReads).toEqual([]);
+    expect(hubReads).toEqual([]);
+  });
+
+  it('leaks nothing on an unexpected failure', async () => {
+    const { d, token, identity, identityKey } = await withIdentity();
+    const secret = await pairWith(d.hub, identity);
+    const clientPubkey = randomKey().pubkey;
+    await d.hub.establishSession({ secret, clientPubkey, now: unixNow() });
+    const pending = await pairWith(d.hub, identity);
+    const [row] = await identityRows(d.hub);
+    const detail = [
+      'SQLITE_ERROR: SELECT COUNT(*) FROM pairings failed',
+      bytesToHex(remoteSigner.secretKey),
+      REMOTE_SIGNER_NSEC,
+      TEST_MASTER_ENCRYPTION_KEY,
+      '    at getAdminStatus (src/admin-status.ts:1:1)',
+    ].join('\n');
+    const failing = withSignerHub(
+      d,
+      stubNamespace(d.hub, {
+        overrides: {
+          getAdminStatus: () => Promise.reject(new Error(detail)),
+        },
+      }),
+    );
+    const log = captureLogs();
+    const forbidden = [
+      ...REMOTE_SIGNER_KEY_FORMS,
+      ...REMOTE_SIGNER_PUBKEY_FORMS,
+      ...privateKeyForms(identityKey.secretKey),
+      ...envelopeForms(row),
+      ...MASTER_KEY_FORMS,
+      identity,
+      clientPubkey,
+      secret,
+      await sha256Hex(secret),
+      pending,
+      await sha256Hex(pending),
+      token,
+      await tokenHash(token),
+      detail,
+      'SQLITE_ERROR',
+    ];
+
+    const response = await getStatus(failing, token);
+    expect(response.headers.get('Cache-Control')).toBe('no-store');
+    expect(await response.clone().text()).not.toMatch(SQL_DETAILS);
+    await expectError(response, 500, 'internal error', forbidden);
+    expect(loggedCalls(log)).toEqual([['Admin API request failed:', 'Error']]);
+    expectSafeLogs(log, forbidden);
   });
 });
