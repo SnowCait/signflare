@@ -3,6 +3,19 @@
   "name": "signflare",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
+  // The Admin SPA (docs/design.md §31.1). The Cloudflare Vite plugin fills in
+  // the directory with the client build output. Files that exist there are
+  // served before the Worker runs; the Worker answers every other request and
+  // serves the SPA's index.html for /admin/* through the binding.
+  // not_found_handling is left unset: its fallback is always the root
+  // index.html, and with it set, browser navigations would no longer reach
+  // the Worker.
+  "assets": {
+    "binding": "ASSETS",
+    // Always handled by the Worker, whatever files the build produces: the
+    // landing page and NIP-46 relay at the root, and the Admin API.
+    "run_worker_first": ["/", "/admin/api/*"],
+  },
   "durable_objects": {
     "bindings": [
       {
