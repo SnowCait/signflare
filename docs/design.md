@@ -1158,7 +1158,7 @@ The cookie MUST use `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/admin`.
 
 The administrative session lifetime MUST be exactly 12 hours from login in v1. Activity MUST NOT extend the expiration time.
 
-Every authenticated Admin API request MUST verify that the session's stored administrator public key still equals the current `ADMIN_PUBLIC_KEY`.
+Every authenticated Admin API request MUST verify that the session's stored administrator public key equals the normalized lowercase hexadecimal form of `ADMIN_PUBLIC_KEY` defined in §11.4.
 
 The raw NIP-98 authorization event and administrative session token MUST NOT be logged.
 
