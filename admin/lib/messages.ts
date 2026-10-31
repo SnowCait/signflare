@@ -27,9 +27,9 @@ export const NO_SIGNER_MESSAGE =
 // which setting is wrong, so these are hints by operation.
 const CONFIGURATION_HINTS: Partial<Record<Operation, string>> = {
   session:
-    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters, then reload this page.',
+    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters or a valid npub, then reload this page.',
   login:
-    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters.',
+    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters or a valid npub.',
   register:
     'Check that the MASTER_ENCRYPTION_KEY secret is set to at least 32 bytes.',
   pairing:

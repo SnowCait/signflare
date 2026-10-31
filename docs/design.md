@@ -333,7 +333,7 @@ It is used for:
 - the NIP-11 `pubkey` field;
 - display of the administrator identity on the public landing page.
 
-Signflare v1 supports one administrator public key.
+Signflare v1 supports one administrator public key. Hex and `npub` settings that decode to the same key are equivalent; changing only the representation MUST preserve sessions, while changing the key MUST invalidate sessions for the previous administrator.
 
 The corresponding administrator private key MUST NOT be provided to Signflare and MUST remain under the administrator's control.
 
@@ -547,10 +547,10 @@ Requirements:
 
 - the raw browser session token MUST NOT be stored;
 - only a cryptographic hash of the session token MUST be stored;
-- `admin_pubkey` MUST equal the configured `ADMIN_PUBLIC_KEY` when the session is created;
+- `admin_pubkey` MUST store the lowercase hexadecimal form normalized from `ADMIN_PUBLIC_KEY` when the session is created;
 - the session lifetime MUST be exactly 12 hours from creation in v1;
 - activity MUST NOT extend the session lifetime;
-- every authenticated Admin API request MUST verify that the stored `admin_pubkey` still equals the currently configured `ADMIN_PUBLIC_KEY`;
+- every authenticated Admin API request MUST normalize `ADMIN_PUBLIC_KEY` to lowercase hexadecimal and compare it with the stored `admin_pubkey`;
 - changing `ADMIN_PUBLIC_KEY` therefore invalidates sessions issued to the previous administrator;
 - expired administrative sessions MUST be rejected and MAY be removed lazily.
 
@@ -1146,7 +1146,7 @@ The server MUST validate:
 - `created_at` within 60 seconds;
 - the `u` tag exactly matches the absolute login request URL;
 - the `method` tag matches `POST`;
-- `event.pubkey === ADMIN_PUBLIC_KEY`.
+- `event.pubkey` MUST equal the lowercase hexadecimal key obtained by normalizing `ADMIN_PUBLIC_KEY`.
 
 If the login request has a body, Signflare MUST require and validate the NIP-98 `payload` tag for that body.
 
@@ -1591,8 +1591,6 @@ Non-secret configuration:
 ```dotenv
 ADMIN_PUBLIC_KEY=
 ```
-
-The previous setting name `ADMIN_PUBKEY` is not supported; deployments MUST be updated to use `ADMIN_PUBLIC_KEY`. Changing only between hex and `npub` representations MUST NOT invalidate sessions; changing the public key MUST invalidate sessions for the previous administrator.
 
 The deployment documentation MUST explain:
 

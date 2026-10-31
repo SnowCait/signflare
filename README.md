@@ -90,12 +90,6 @@ It is not a private key. The administrator's private key stays in the
 administrator's NIP-07 browser signer: never upload, import, or register it in
 Signflare.
 
-Changing the setting name from `ADMIN_PUBKEY` to `ADMIN_PUBLIC_KEY` requires
-updating existing deployments and local configuration; the old name is no longer
-read. Changing the key itself ends the Admin UI sessions of the previous
-administrator. Changing only between hex and `npub` representations preserves
-those sessions.
-
 ### `MASTER_ENCRYPTION_KEY`
 
 A secret with at least 256 bits of cryptographically random key material. It
@@ -279,7 +273,7 @@ In a fork or clone of this repository:
 
 2. Set `vars.ADMIN_PUBLIC_KEY` in `wrangler.jsonc` to your hex public key or `npub`. To keep
    `wrangler.jsonc` unchanged instead, pass
-   `--var ADMIN_PUBLIC_KEY:<hex public key or `npub`>` to every `wrangler deploy`.
+   `--var ADMIN_PUBLIC_KEY:<hex-or-npub>` to every `wrangler deploy`.
 
 3. Write the two secrets to a file outside the repository, for example
    `../signflare-secrets.env`, in the same form as `.dev.vars`. Do not put

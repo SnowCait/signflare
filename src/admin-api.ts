@@ -105,7 +105,7 @@ adminApi.use(async (c, next) => {
   const adminPubkey = parseAdminPubkey(c.env.ADMIN_PUBLIC_KEY);
   if (adminPubkey === null) {
     console.error(
-      'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key',
+      'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key or a valid npub',
     );
     return errorResponse(c, 500, 'server configuration error');
   }

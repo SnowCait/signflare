@@ -37,7 +37,7 @@ app.get('/', (c) => {
   const adminPubkey = parseAdminPubkey(c.env.ADMIN_PUBLIC_KEY);
   if (adminPubkey === null) {
     console.error(
-      'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key',
+      'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key or a valid npub',
     );
   }
   if (acceptsRelayInformation(c.req.header('Accept'))) {

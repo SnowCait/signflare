@@ -1,4 +1,4 @@
-import { npubEncode } from 'nostr-tools/nip19';
+import { nsecEncode, npubEncode } from 'nostr-tools/nip19';
 import { bytesToHex, hexToBytes } from 'nostr-tools/utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseAdminPubkey, parseMasterEncryptionKey } from '../src/config';
@@ -35,7 +35,7 @@ describe('parseAdminPubkey', () => {
     ['63 characters', PUBKEY_ONE.slice(1)],
     ['65 characters', `${PUBKEY_ONE}0`],
     ['surrounding whitespace', ` ${PUBKEY_ONE}\n`],
-    ['an nsec', 'nsec1invalid'],
+    ['an nsec', nsecEncode(new Uint8Array(32).fill(1))],
     ['an invalid checksum', `${npubEncode(PUBKEY_ONE).slice(0, -1)}q`],
   ])('rejects %s', (_case, value) => {
     expect(parseAdminPubkey(value)).toBeNull();

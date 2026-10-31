@@ -26,7 +26,7 @@ const NAVIGATION = {
     'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 };
 const CONFIGURATION_ERROR =
-  'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key';
+  'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key or a valid npub';
 const BINDINGS = [
   'ADMIN_PUBLIC_KEY',
   'ASSETS',
