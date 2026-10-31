@@ -1,5 +1,5 @@
 // The NIP-11 Relay Information Document of the restricted NIP-46 relay at the
-// root (docs/design.md §4.4, §37.2). It is built from ADMIN_PUBKEY alone. It
+// root (docs/design.md §4.4, §37.2). It is built from ADMIN_PUBLIC_KEY alone. It
 // has no `self` and never carries the remote-signer pubkey, which is
 // connection material that only bunker:// connection tokens disclose (§7.2).
 
@@ -45,7 +45,7 @@ export function acceptsRelayInformation(accept: string | undefined): boolean {
   });
 }
 
-// `adminPubkey` is the parsed ADMIN_PUBKEY: the administrative contact.
+// `adminPubkey` is the parsed ADMIN_PUBLIC_KEY: the administrative contact.
 export function relayInformation(adminPubkey: string): RelayInformation {
   return {
     name: 'Signflare',

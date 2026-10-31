@@ -27,9 +27,9 @@ export const NO_SIGNER_MESSAGE =
 // which setting is wrong, so these are hints by operation.
 const CONFIGURATION_HINTS: Partial<Record<Operation, string>> = {
   session:
-    'Check that ADMIN_PUBKEY is set to the administrator public key as 64 lowercase hex characters, then reload this page.',
+    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters, then reload this page.',
   login:
-    'Check that ADMIN_PUBKEY is set to the administrator public key as 64 lowercase hex characters.',
+    'Check that ADMIN_PUBLIC_KEY is set to the administrator public key as 64 lowercase hex characters.',
   register:
     'Check that the MASTER_ENCRYPTION_KEY secret is set to at least 32 bytes.',
   pairing:
@@ -76,7 +76,7 @@ export function errorMessage(error: unknown, operation: Operation): string {
   if (isConfigurationError(error)) {
     return `Server configuration error. ${
       CONFIGURATION_HINTS[operation] ??
-      'Check ADMIN_PUBKEY and the Worker secrets in the deployment settings.'
+      'Check ADMIN_PUBLIC_KEY and the Worker secrets in the deployment settings.'
     }`;
   }
   switch (error.status) {
@@ -84,7 +84,7 @@ export function errorMessage(error: unknown, operation: Operation): string {
       return badRequestMessage(error, operation);
     case 401:
       return operation === 'login'
-        ? 'The login was rejected. Sign with the key configured as ADMIN_PUBKEY, and make sure that this device’s clock is correct.'
+        ? 'The login was rejected. Sign with the key configured as ADMIN_PUBLIC_KEY, and make sure that this device’s clock is correct.'
         : 'Your admin session has ended. Sign in again.';
     case 403:
       return 'The server refused the request because it did not come from this page. Reload the page and try again.';

@@ -26,9 +26,9 @@ const NAVIGATION = {
     'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 };
 const CONFIGURATION_ERROR =
-  'ADMIN_PUBKEY must be set to a lowercase 64-character hex public key';
+  'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key';
 const BINDINGS = [
-  'ADMIN_PUBKEY',
+  'ADMIN_PUBLIC_KEY',
   'ASSETS',
   'MASTER_ENCRYPTION_KEY',
   'REMOTE_SIGNER_PRIVATE_KEY',
@@ -57,7 +57,7 @@ function deployment(overrides: Partial<Env> = {}): Deployment {
   const reads: string[] = [];
   const workerEnv: Env = {
     ...env,
-    ADMIN_PUBKEY: admin.pubkey,
+    ADMIN_PUBLIC_KEY: admin.pubkey,
     MASTER_ENCRYPTION_KEY: TEST_MASTER_ENCRYPTION_KEY,
     REMOTE_SIGNER_PRIVATE_KEY: nsecEncode(remoteSigner.secretKey),
     SIGNER_HUB: {
@@ -270,11 +270,11 @@ describe('NIP-11 relay information document', () => {
     expect(d.hubNames).toEqual([]);
   });
 
-  it('reads ADMIN_PUBKEY and nothing else', async () => {
+  it('reads ADMIN_PUBLIC_KEY and nothing else', async () => {
     const d = deployment();
     const response = await send(d, { headers: NIP11 });
     expect(response.status).toBe(200);
-    expect(d.reads).toEqual(['ADMIN_PUBKEY']);
+    expect(d.reads).toEqual(['ADMIN_PUBLIC_KEY']);
     expect(d.hubNames).toEqual([]);
     expect(d.assetRequests).toEqual([]);
   });
@@ -294,15 +294,14 @@ describe('NIP-11 relay information document', () => {
     ['missing', undefined],
     ['the empty placeholder', ''],
     ['uppercase', admin.pubkey.toUpperCase()],
-    ['an npub', npubEncode(admin.pubkey)],
     ['markup', '<script>alert(1)</script>'],
-  ])('fails safely when ADMIN_PUBKEY is %s', async (_case, value) => {
+  ])('fails safely when ADMIN_PUBLIC_KEY is %s', async (_case, value) => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const d = deployment();
     const misconfigured =
       value === undefined
-        ? withoutBinding(d.env, 'ADMIN_PUBKEY')
-        : { ...d.env, ADMIN_PUBKEY: value as string };
+        ? withoutBinding(d.env, 'ADMIN_PUBLIC_KEY')
+        : { ...d.env, ADMIN_PUBLIC_KEY: value as string };
     const response = await send(misconfigured, { headers: NIP11 });
     expect(response.status).toBe(500);
     expect(response.headers.get('Content-Type')).toMatch(/^application\/json/);
@@ -383,10 +382,10 @@ describe('landing page', () => {
     expect(html).not.toMatch(/identit|session|pairing|database|storage/i);
   });
 
-  it('reads ADMIN_PUBKEY and nothing else', async () => {
+  it('reads ADMIN_PUBLIC_KEY and nothing else', async () => {
     const d = deployment();
     await page(d);
-    expect(d.reads).toEqual(['ADMIN_PUBKEY']);
+    expect(d.reads).toEqual(['ADMIN_PUBLIC_KEY']);
     expect(d.hubNames).toEqual([]);
     expect(d.assetRequests).toEqual([]);
   });
@@ -413,13 +412,13 @@ describe('landing page', () => {
     ['missing', undefined],
     ['the empty placeholder', ''],
     ['malformed', '<script>alert(1)</script>'],
-  ])('fails safely when ADMIN_PUBKEY is %s', async (_case, value) => {
+  ])('fails safely when ADMIN_PUBLIC_KEY is %s', async (_case, value) => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const d = deployment();
     const misconfigured =
       value === undefined
-        ? withoutBinding(d.env, 'ADMIN_PUBKEY')
-        : { ...d.env, ADMIN_PUBKEY: value as string };
+        ? withoutBinding(d.env, 'ADMIN_PUBLIC_KEY')
+        : { ...d.env, ADMIN_PUBLIC_KEY: value as string };
     const response = await send(misconfigured, { headers: NAVIGATION });
     expect(response.status).toBe(500);
     const text = await response.text();

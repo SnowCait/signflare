@@ -27,11 +27,11 @@ describe('errorMessage', () => {
   });
 
   it.each<[string, RegExp]>([
-    ['session', /ADMIN_PUBKEY/],
-    ['login', /ADMIN_PUBKEY/],
+    ['session', /ADMIN_PUBLIC_KEY/],
+    ['login', /ADMIN_PUBLIC_KEY/],
     ['register', /MASTER_ENCRYPTION_KEY/],
     ['pairing', /REMOTE_SIGNER_PRIVATE_KEY/],
-    ['revoke', /ADMIN_PUBKEY and the Worker secrets/],
+    ['revoke', /ADMIN_PUBLIC_KEY and the Worker secrets/],
   ])('points to the configuration to check for %s', (operation, hint) => {
     const message = errorMessage(
       new ApiError(500, 'server configuration error'),

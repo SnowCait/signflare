@@ -368,7 +368,7 @@ describe('authenticateAdminSession', () => {
         authenticateAdminSession(sql, tokenHash, PREVIOUS_ADMIN, NOW + 1),
       ).toBeNull();
       expect(sessionRows(sql)).toEqual([]);
-      // Changing ADMIN_PUBKEY back does not revive it.
+      // Changing ADMIN_PUBLIC_KEY back does not revive it.
       expect(
         authenticateAdminSession(sql, tokenHash, ADMIN, NOW + 2),
       ).toBeNull();

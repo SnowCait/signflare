@@ -23,6 +23,10 @@ describe('parseAdminPubkey', () => {
     expect(parseAdminPubkey(PUBKEY_ONE)).toBe(PUBKEY_ONE);
   });
 
+  it('accepts npub and normalizes it to lowercase hex', () => {
+    expect(parseAdminPubkey(npubEncode(PUBKEY_ONE))).toBe(PUBKEY_ONE);
+  });
+
   it.each<[string, unknown]>([
     ['a missing value', undefined],
     ['the empty placeholder in wrangler.jsonc', ''],
@@ -31,7 +35,8 @@ describe('parseAdminPubkey', () => {
     ['63 characters', PUBKEY_ONE.slice(1)],
     ['65 characters', `${PUBKEY_ONE}0`],
     ['surrounding whitespace', ` ${PUBKEY_ONE}\n`],
-    ['an npub', npubEncode(PUBKEY_ONE)],
+    ['an nsec', 'nsec1invalid'],
+    ['an invalid checksum', `${npubEncode(PUBKEY_ONE).slice(0, -1)}q`],
   ])('rejects %s', (_case, value) => {
     expect(parseAdminPubkey(value)).toBeNull();
   });

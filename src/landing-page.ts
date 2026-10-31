@@ -10,7 +10,7 @@ export const LANDING_PAGE_CONTENT_SECURITY_POLICY =
   "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 // The informational page at the root (docs/design.md §37.3). It shows public
-// deployment information only: the parsed ADMIN_PUBKEY and the relay URL of
+// deployment information only: the parsed ADMIN_PUBLIC_KEY and the relay URL of
 // the deployment. `html` escapes every interpolated value.
 export function landingPage(adminPubkey: string, relay: string) {
   return html`<!doctype html>

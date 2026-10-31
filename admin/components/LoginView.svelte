@@ -26,7 +26,7 @@
   <h2 id="login-heading">Sign in</h2>
   <p>
     Sign in with the Nostr key configured as this deployment’s administrator (<code
-      >ADMIN_PUBKEY</code
+      >ADMIN_PUBLIC_KEY</code
     >). Your NIP-07 browser signer is asked to sign a one-time NIP-98 login
     event; the key itself never leaves the signer.
   </p>

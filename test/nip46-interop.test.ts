@@ -44,7 +44,7 @@ async function deployment(): Promise<Deployment> {
     admin,
     env: {
       ...relay.env,
-      ADMIN_PUBKEY: admin.pubkey,
+      ADMIN_PUBLIC_KEY: admin.pubkey,
       REMOTE_SIGNER_PRIVATE_KEY: nsecEncode(relay.remoteSigner.secretKey),
     },
   };
