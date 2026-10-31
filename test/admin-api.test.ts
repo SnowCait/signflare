@@ -97,7 +97,7 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
   return {
     env: {
       ...env,
-      ADMIN_PUBKEY: adminPubkey as string,
+      ADMIN_PUBLIC_KEY: adminPubkey as string,
       REMOTE_SIGNER_PRIVATE_KEY: REMOTE_SIGNER_NSEC,
       SIGNER_HUB: namespace as unknown as Env['SIGNER_HUB'],
     },
@@ -108,11 +108,11 @@ function deployment(adminPubkey: unknown = admin.pubkey): Deployment {
 
 function unconfiguredDeployment(): Deployment {
   const d = deployment();
-  return { ...d, env: withoutBinding(d.env, 'ADMIN_PUBKEY') };
+  return { ...d, env: withoutBinding(d.env, 'ADMIN_PUBLIC_KEY') };
 }
 
 function withAdminPubkey(d: Deployment, adminPubkey: string): Deployment {
-  return { ...d, env: { ...d.env, ADMIN_PUBKEY: adminPubkey } };
+  return { ...d, env: { ...d.env, ADMIN_PUBLIC_KEY: adminPubkey } };
 }
 
 interface RequestOptions {
@@ -712,7 +712,7 @@ afterEach(() => {
 });
 
 describe('POST /admin/api/login', () => {
-  it('logs in with an event signed by ADMIN_PUBKEY', async () => {
+  it('logs in with an event signed by ADMIN_PUBLIC_KEY', async () => {
     setNow(T0);
     const d = deployment();
     const response = await postLogin(d, signHttpAuthEvent(admin));
@@ -724,6 +724,13 @@ describe('POST /admin/api/login', () => {
       expiresAt: T0 + TWELVE_HOURS,
     });
     expect(setCookies(response)).toHaveLength(1);
+  });
+
+  it('logs in when ADMIN_PUBLIC_KEY is configured as npub', async () => {
+    const d = deployment(npubEncode(admin.pubkey));
+    const response = await postLogin(d, signHttpAuthEvent(admin));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ pubkey: admin.pubkey });
   });
 
   it('issues a HttpOnly, Secure, SameSite=Strict cookie scoped to /admin', async () => {
@@ -795,7 +802,7 @@ describe('POST /admin/api/login', () => {
   });
 
   it('persists the session in the deployment-wide SignerHub', async () => {
-    const testEnv = { ...env, ADMIN_PUBKEY: admin.pubkey };
+    const testEnv = { ...env, ADMIN_PUBLIC_KEY: admin.pubkey };
     const login = await send(testEnv, LOGIN_URL, {
       method: 'POST',
       authorization: nostrAuthorization(signHttpAuthEvent(admin)),
@@ -1201,7 +1208,21 @@ describe('GET /admin/api/session', () => {
     expect((await getSession(d, token)).status).toBe(401);
   });
 
-  it('rejects a session issued before ADMIN_PUBKEY changed', async () => {
+  it('keeps a session when ADMIN_PUBLIC_KEY changes representation', async () => {
+    const d = deployment();
+    const token = await logIn(d);
+    const asNpub = withAdminPubkey(d, npubEncode(admin.pubkey));
+    expect(await (await getSession(asNpub, token)).json()).toMatchObject({
+      pubkey: admin.pubkey,
+    });
+    expect((await adminRows(d.hub)).sessions).toHaveLength(1);
+    const asHex = withAdminPubkey(asNpub, admin.pubkey);
+    expect(await (await getSession(asHex, token)).json()).toMatchObject({
+      pubkey: admin.pubkey,
+    });
+  });
+
+  it('rejects a session issued before ADMIN_PUBLIC_KEY changed', async () => {
     const d = deployment();
     const token = await logIn(d);
     const changed = withAdminPubkey(d, other.pubkey);
@@ -1385,7 +1406,7 @@ describe('same-origin protection', () => {
   );
 });
 
-describe('ADMIN_PUBKEY configuration', () => {
+describe('ADMIN_PUBLIC_KEY configuration', () => {
   it.each<[string, () => Deployment]>([
     ['missing', unconfiguredDeployment],
     ['empty', () => deployment('')],
@@ -1394,7 +1415,6 @@ describe('ADMIN_PUBKEY configuration', () => {
     ['too long', () => deployment(`${admin.pubkey}00`)],
     ['not hex', () => deployment('zz'.repeat(32))],
     ['surrounded by whitespace', () => deployment(` ${admin.pubkey} `)],
-    ['an npub', () => deployment(npubEncode(admin.pubkey))],
     ['not a string', () => deployment(42)],
   ])(
     'reports a server configuration error when it is %s',
@@ -1402,7 +1422,7 @@ describe('ADMIN_PUBKEY configuration', () => {
       const log = vi.spyOn(console, 'error').mockImplementation(() => {});
       const d = configure();
       const event = signHttpAuthEvent(admin);
-      const configured: unknown = d.env.ADMIN_PUBKEY;
+      const configured: unknown = d.env.ADMIN_PUBLIC_KEY;
       // Neither the request nor the rejected configuration value is echoed.
       const forbidden = [
         ...secretsOf(event),
@@ -1445,7 +1465,7 @@ describe('ADMIN_PUBKEY configuration', () => {
   it('is only a placeholder in the repository', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     // The value in wrangler.jsonc, which each deployment replaces.
-    const d = deployment(wranglerConfig.vars.ADMIN_PUBKEY);
+    const d = deployment(wranglerConfig.vars.ADMIN_PUBLIC_KEY);
     const response = await getSession(d, 'ab'.repeat(32));
     await expectError(response, 500, 'server configuration error');
     const login = await postLogin(d, signHttpAuthEvent(admin));
@@ -2284,7 +2304,7 @@ describe('status, identity, pairing, and session endpoint protection', () => {
   );
 
   it.each(endpoints)(
-    '%s rejects a session issued before ADMIN_PUBKEY changed',
+    '%s rejects a session issued before ADMIN_PUBLIC_KEY changed',
     async (_name, request) => {
       const { d, token } = await guarded();
       await expectError(

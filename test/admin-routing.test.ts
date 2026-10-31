@@ -42,7 +42,7 @@ function deployment(): AssetsStub {
   return {
     env: {
       ...env,
-      ADMIN_PUBKEY: randomKey().pubkey,
+      ADMIN_PUBLIC_KEY: randomKey().pubkey,
       ASSETS: assets as unknown as Env['ASSETS'],
       SIGNER_HUB: {
         getByName(name: string) {

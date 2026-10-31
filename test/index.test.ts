@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { SignerHub } from '../src/index';
 
 // The Worker as the test pool configures it from wrangler.jsonc, with the
-// test-only ADMIN_PUBKEY of vitest.config.ts.
+// test-only ADMIN_PUBLIC_KEY of vitest.config.ts.
 describe('worker', () => {
   it('responds to a request', async () => {
     const response = await exports.default.fetch('https://example.com/');
@@ -12,13 +12,13 @@ describe('worker', () => {
     expect(response.headers.get('Content-Type')).toMatch(/^text\/html/);
   });
 
-  it('serves the NIP-11 document with the configured ADMIN_PUBKEY', async () => {
+  it('serves the NIP-11 document with the configured ADMIN_PUBLIC_KEY', async () => {
     const response = await exports.default.fetch('https://example.com/', {
       headers: { Accept: 'application/nostr+json' },
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      pubkey: env.ADMIN_PUBKEY,
+      pubkey: env.ADMIN_PUBLIC_KEY,
     });
   });
 });

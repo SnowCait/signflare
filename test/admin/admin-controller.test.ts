@@ -148,7 +148,7 @@ describe('session check', () => {
     await admin.start();
     expect(admin.state.auth.status).toBe('configuration_error');
     expect(admin.state.auth).toMatchObject({
-      message: expect.stringContaining('ADMIN_PUBKEY'),
+      message: expect.stringContaining('ADMIN_PUBLIC_KEY'),
     });
   });
 
@@ -244,7 +244,9 @@ describe('login', () => {
     await context.admin.start();
     await context.admin.login();
     expect(context.admin.state.auth.status).toBe('unauthenticated');
-    expect(context.admin.state.loginError).toMatch(/rejected.*ADMIN_PUBKEY/);
+    expect(context.admin.state.loginError).toMatch(
+      /rejected.*ADMIN_PUBLIC_KEY/,
+    );
     expect(context.admin.state.notice).toBeNull();
   });
 
@@ -273,7 +275,7 @@ describe('expired admin sessions', () => {
     await admin.loadSessions(identity.pubkey);
     expect(admin.state.pairings[identity.pubkey].bunkerUrl).toMatch(/^bunker:/);
 
-    // The session expires, or ADMIN_PUBKEY changes, on the server.
+    // The session expires, or ADMIN_PUBLIC_KEY changes, on the server.
     server.signedIn = false;
     await admin.refresh();
     expectSignedOut(admin.state);

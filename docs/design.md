@@ -273,7 +273,7 @@ REMOTE_SIGNER_PRIVATE_KEY
 The deployment MUST also define the following non-secret configuration value:
 
 ```text
-ADMIN_PUBKEY
+ADMIN_PUBLIC_KEY
 ```
 
 ### 7.1 `MASTER_ENCRYPTION_KEY`
@@ -321,9 +321,9 @@ The secret MUST NOT be stored in the Durable Object database.
 
 It MUST NOT be logged or returned by administrative APIs.
 
-### 7.3 `ADMIN_PUBKEY`
+### 7.3 `ADMIN_PUBLIC_KEY`
 
-`ADMIN_PUBKEY` is the lowercase hexadecimal Nostr public key authorized to administer the deployment.
+`ADMIN_PUBLIC_KEY` accepts either a lowercase hexadecimal Nostr public key or a valid NIP-19 `npub`. It is normalized to lowercase hexadecimal before use.
 
 It is public configuration, not a secret.
 
@@ -333,7 +333,7 @@ It is used for:
 - the NIP-11 `pubkey` field;
 - display of the administrator identity on the public landing page.
 
-Signflare v1 supports one administrator public key.
+Signflare v1 supports one administrator public key. Hex and `npub` settings that decode to the same key are equivalent; changing only the representation MUST preserve sessions, while changing the key MUST invalidate sessions for the previous administrator.
 
 The corresponding administrator private key MUST NOT be provided to Signflare and MUST remain under the administrator's control.
 
@@ -547,11 +547,11 @@ Requirements:
 
 - the raw browser session token MUST NOT be stored;
 - only a cryptographic hash of the session token MUST be stored;
-- `admin_pubkey` MUST equal the configured `ADMIN_PUBKEY` when the session is created;
+- `admin_pubkey` MUST store the lowercase hexadecimal form normalized from `ADMIN_PUBLIC_KEY` when the session is created;
 - the session lifetime MUST be exactly 12 hours from creation in v1;
 - activity MUST NOT extend the session lifetime;
-- every authenticated Admin API request MUST verify that the stored `admin_pubkey` still equals the currently configured `ADMIN_PUBKEY`;
-- changing `ADMIN_PUBKEY` therefore invalidates sessions issued to the previous administrator;
+- every authenticated Admin API request MUST normalize `ADMIN_PUBLIC_KEY` to lowercase hexadecimal and compare it with the stored `admin_pubkey`;
+- changing `ADMIN_PUBLIC_KEY` therefore invalidates sessions issued to the previous administrator;
 - expired administrative sessions MUST be rejected and MAY be removed lazily.
 
 ### 11.5 `admin_auth_events`
@@ -1146,7 +1146,7 @@ The server MUST validate:
 - `created_at` within 60 seconds;
 - the `u` tag exactly matches the absolute login request URL;
 - the `method` tag matches `POST`;
-- `event.pubkey === ADMIN_PUBKEY`.
+- `event.pubkey` MUST equal the lowercase hexadecimal key obtained by normalizing `ADMIN_PUBLIC_KEY`.
 
 If the login request has a body, Signflare MUST require and validate the NIP-98 `payload` tag for that body.
 
@@ -1158,7 +1158,7 @@ The cookie MUST use `HttpOnly`, `Secure`, `SameSite=Strict`, and `Path=/admin`.
 
 The administrative session lifetime MUST be exactly 12 hours from login in v1. Activity MUST NOT extend the expiration time.
 
-Every authenticated Admin API request MUST verify that the session's stored administrator public key still equals the current `ADMIN_PUBKEY`.
+Every authenticated Admin API request MUST verify that the session's stored administrator public key equals the normalized lowercase hexadecimal form of `ADMIN_PUBLIC_KEY` defined in §11.4.
 
 The raw NIP-98 authorization event and administrative session token MUST NOT be logged.
 
@@ -1589,13 +1589,13 @@ REMOTE_SIGNER_PRIVATE_KEY=
 Non-secret configuration:
 
 ```dotenv
-ADMIN_PUBKEY=
+ADMIN_PUBLIC_KEY=
 ```
 
 The deployment documentation MUST explain:
 
 - how to generate valid random values for the two secrets;
-- that `ADMIN_PUBKEY` is the Nostr public key authorized to access the Admin UI;
+- that `ADMIN_PUBLIC_KEY` is the Nostr public key authorized to access the Admin UI;
 - that the administrator private key is never uploaded to Signflare;
 - that a NIP-07-capable browser signer is required for v1 Web Admin login.
 
@@ -1839,7 +1839,7 @@ v1 MUST have automated tests covering the following areas.
 
 ### 39.10 Administrative authentication
 
-- NIP-98 login accepts a valid event signed by `ADMIN_PUBKEY`;
+- NIP-98 login accepts a valid event signed by `ADMIN_PUBLIC_KEY`;
 - login rejects another pubkey;
 - login rejects an invalid signature;
 - login rejects the wrong kind;
@@ -1853,7 +1853,7 @@ v1 MUST have automated tests covering the following areas.
 - only the hash of the administrative session token is stored;
 - administrative sessions expire exactly 12 hours after creation;
 - activity does not extend administrative session expiration;
-- changing `ADMIN_PUBKEY` invalidates sessions issued to the previous administrator;
+- changing `ADMIN_PUBLIC_KEY` invalidates sessions issued to the previous administrator;
 - logout invalidates the administrative session;
 - expired administrative sessions are rejected;
 - state-changing Admin API requests enforce same-origin protections.
@@ -1918,13 +1918,13 @@ v1 is complete when all of the following are true:
 28. An ordinary `GET /` returns an informational landing page without exposing administrative state or secrets.
 29. The Admin UI is implemented as a Svelte + Vite client application served through Workers Static Assets.
 30. SvelteKit is not used in v1.
-31. Administrative login uses NIP-98 signed by `ADMIN_PUBKEY` through a NIP-07 browser signer.
+31. Administrative login uses NIP-98 signed by `ADMIN_PUBLIC_KEY` through a NIP-07 browser signer.
 32. Administrative requests after login use a server-side session represented by an HttpOnly, Secure, SameSite=Strict cookie.
 33. No static `ADMIN_TOKEN` is required by v1.
 34. After a successful pairing, a client using the same client keypair can reconnect to the relay and reuse the existing session without another pairing or NIP-46 `connect`.
 35. NIP-98 login events are single-use and replay of the same event ID is rejected.
 36. Administrative sessions expire exactly 12 hours after login and are not extended by activity.
-37. Changing `ADMIN_PUBKEY` invalidates administrative sessions issued to the previous administrator.
+37. Changing `ADMIN_PUBLIC_KEY` invalidates administrative sessions issued to the previous administrator.
 38. Automated tests cover the security-critical flows listed above.
 39. Linting, type checking, and tests pass in CI.
 ---

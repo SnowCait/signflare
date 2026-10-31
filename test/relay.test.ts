@@ -258,7 +258,7 @@ describe('ordinary requests to the root', () => {
       new Request(`${ORIGIN}/admin/api/session`, {
         headers: { Upgrade: 'websocket' },
       }),
-      { ...relay.env, ADMIN_PUBKEY: randomKey().pubkey },
+      { ...relay.env, ADMIN_PUBLIC_KEY: randomKey().pubkey },
     );
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: 'unauthorized' });

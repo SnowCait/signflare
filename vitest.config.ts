@@ -8,9 +8,9 @@ export default defineConfig({
       miniflare: {
         bindings: {
           // A test-only value, so that the Worker's own env never takes
-          // ADMIN_PUBKEY from a local .dev.vars: the public key of the
+          // ADMIN_PUBLIC_KEY from a local .dev.vars: the public key of the
           // private key 1.
-          ADMIN_PUBKEY:
+          ADMIN_PUBLIC_KEY:
             '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
         },
       },

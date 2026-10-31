@@ -24,7 +24,7 @@ interface PackageJson {
 
 // Every binding of the Worker and the SignerHub.
 const BINDINGS = [
-  'ADMIN_PUBKEY',
+  'ADMIN_PUBLIC_KEY',
   'ASSETS',
   'MASTER_ENCRYPTION_KEY',
   'REMOTE_SIGNER_PRIVATE_KEY',
@@ -85,9 +85,9 @@ describe('wrangler.jsonc', () => {
     });
   });
 
-  it('declares ADMIN_PUBKEY as public configuration', () => {
-    expect(Object.keys(config.vars)).toEqual(['ADMIN_PUBKEY']);
-    expect(config.secrets.required).not.toContain('ADMIN_PUBKEY');
+  it('declares ADMIN_PUBLIC_KEY as public configuration', () => {
+    expect(Object.keys(config.vars)).toEqual(['ADMIN_PUBLIC_KEY']);
+    expect(config.secrets.required).not.toContain('ADMIN_PUBLIC_KEY');
   });
 
   it('declares the two keys as required Worker secrets', () => {
@@ -101,11 +101,11 @@ describe('wrangler.jsonc', () => {
   });
 
   it('holds no administrator public key', () => {
-    expect(config.vars.ADMIN_PUBKEY).toBe('');
-    expect(parseAdminPubkey(config.vars.ADMIN_PUBKEY)).toBeNull();
+    expect(config.vars.ADMIN_PUBLIC_KEY).toBe('');
+    expect(parseAdminPubkey(config.vars.ADMIN_PUBLIC_KEY)).toBeNull();
   });
 
-  it('stays the source of truth for ADMIN_PUBKEY on deploy', () => {
+  it('stays the source of truth for ADMIN_PUBLIC_KEY on deploy', () => {
     expect(config).not.toHaveProperty('keep_vars');
   });
 });
@@ -113,7 +113,7 @@ describe('wrangler.jsonc', () => {
 describe('generated binding types', () => {
   it('types every binding from wrangler.jsonc', () => {
     expectTypeOf<keyof Env>().toEqualTypeOf<(typeof BINDINGS)[number]>();
-    expectTypeOf<Env['ADMIN_PUBKEY']>().toEqualTypeOf<string>();
+    expectTypeOf<Env['ADMIN_PUBLIC_KEY']>().toEqualTypeOf<string>();
     expectTypeOf<Env['MASTER_ENCRYPTION_KEY']>().toEqualTypeOf<string>();
     expectTypeOf<Env['REMOTE_SIGNER_PRIVATE_KEY']>().toEqualTypeOf<string>();
     expectTypeOf<Env['ASSETS']>().toEqualTypeOf<Fetcher>();
@@ -128,8 +128,8 @@ describe('generated binding types', () => {
     >().toEqualTypeOf<Env>();
   });
 
-  it('types ADMIN_PUBKEY as a string rather than its placeholder', () => {
-    // With literal types, the generated Env would type ADMIN_PUBKEY as "".
+  it('types ADMIN_PUBLIC_KEY as a string rather than its placeholder', () => {
+    // With literal types, the generated Env would type ADMIN_PUBLIC_KEY as "".
     expect(pkg.scripts.types).toBe('wrangler types --strict-vars=false');
     expect(pkg.scripts.typecheck).toMatch(/^npm run types && /);
   });
@@ -140,9 +140,9 @@ describe('.dev.vars.example', () => {
     expect([...example.keys()]).toEqual(config.secrets.required);
   });
 
-  it('assigns no ADMIN_PUBKEY, not even in a comment', () => {
+  it('assigns no ADMIN_PUBLIC_KEY, not even in a comment', () => {
     // Deploy to Cloudflare reads the names in this file as Worker secrets.
-    expect(devVarsExample).not.toMatch(/ADMIN_PUBKEY\s*=/);
+    expect(devVarsExample).not.toMatch(/ADMIN_PUBLIC_KEY\s*=/);
   });
 
   it('holds placeholders that are not usable secrets', () => {
@@ -181,7 +181,9 @@ describe('Deploy to Cloudflare', () => {
       expect(description).toEqual(expect.any(String));
       expect(description.length).toBeGreaterThan(0);
     }
-    expect(descriptions.ADMIN_PUBKEY.description).toMatch(/64 lowercase hex/);
+    expect(descriptions.ADMIN_PUBLIC_KEY.description).toMatch(
+      /64 lowercase hex/,
+    );
     expect(descriptions.MASTER_ENCRYPTION_KEY.description).toMatch(
       /at least 32 bytes/,
     );

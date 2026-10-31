@@ -8,8 +8,8 @@
   },
   "cloudflare": {
     "bindings": {
-      "ADMIN_PUBKEY": {
-        "description": "Administrator's Nostr public key: exactly 64 lowercase hexadecimal characters, not an npub. Never enter a private key; it stays in your NIP-07 signer."
+      "ADMIN_PUBLIC_KEY": {
+        "description": "Administrator's Nostr public key: 64 lowercase hex characters or a valid npub. Never enter a private key; it stays in your NIP-07 signer."
       },
       "MASTER_ENCRYPTION_KEY": {
         "description": "Random secret key material of at least 32 bytes, used to encrypt stored private keys. Generate with `openssl rand -hex 32`. Changing it later prevents decrypting existing keys."

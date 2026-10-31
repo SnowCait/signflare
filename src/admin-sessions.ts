@@ -135,7 +135,7 @@ export function authenticateAdminSession(
     return null;
   }
   if (row.expires_at <= now || row.admin_pubkey !== adminPubkey) {
-    // Removed so that it stays invalid even if ADMIN_PUBKEY is changed back.
+    // Removed so that it stays invalid even if ADMIN_PUBLIC_KEY is changed back.
     deleteAdminSession(sql, tokenHash);
     return null;
   }

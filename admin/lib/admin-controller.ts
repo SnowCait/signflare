@@ -504,7 +504,7 @@ export class AdminController {
 
   // Every request that needs the admin session ends up here on 401: the
   // session has expired, was logged out elsewhere, or was issued to an
-  // administrator other than the configured ADMIN_PUBKEY.
+  // administrator other than the configured ADMIN_PUBLIC_KEY.
   #sessionEnded(): void {
     const wasAuthenticated = this.#state.auth.status === 'authenticated';
     this.#reset({

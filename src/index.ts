@@ -27,17 +27,17 @@ const app = new Hono<{ Bindings: Env }>();
 // The public root (docs/design.md §37). A WebSocket upgrade takes precedence
 // over every other use of it: it connects to the NIP-46 relay in the
 // SignerHub. Then come the NIP-11 document and the landing page, which are
-// built from ADMIN_PUBKEY and the request URL alone. Neither of them reaches
+// built from ADMIN_PUBLIC_KEY and the request URL alone. Neither of them reaches
 // the SignerHub or reads a secret.
 app.get('/', (c) => {
   if (isWebSocketUpgrade(c.req.raw)) {
     return getSignerHub(c.env).fetch(c.req.raw);
   }
   c.header('Vary', 'Accept');
-  const adminPubkey = parseAdminPubkey(c.env.ADMIN_PUBKEY);
+  const adminPubkey = parseAdminPubkey(c.env.ADMIN_PUBLIC_KEY);
   if (adminPubkey === null) {
     console.error(
-      'ADMIN_PUBKEY must be set to a lowercase 64-character hex public key',
+      'ADMIN_PUBLIC_KEY must be set to a lowercase 64-character hex public key or a valid npub',
     );
   }
   if (acceptsRelayInformation(c.req.header('Accept'))) {

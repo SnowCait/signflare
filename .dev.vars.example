@@ -16,4 +16,4 @@ REMOTE_SIGNER_PRIVATE_KEY=
 
 # Local development also needs the administrator's public key. It is not a
 # secret and lives in wrangler.jsonc for deployments, so add a line for
-# ADMIN_PUBKEY to your .dev.vars rather than to this file.
+# ADMIN_PUBLIC_KEY to your .dev.vars rather than to this file.

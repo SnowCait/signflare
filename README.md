@@ -58,20 +58,20 @@ Every deployment sets three values (docs/design.md §7):
 
 | Name                        | Kind                     | Purpose                                                 |
 | --------------------------- | ------------------------ | ------------------------------------------------------- |
-| `ADMIN_PUBKEY`              | Public variable (`vars`) | The administrator's Nostr public key                    |
+| `ADMIN_PUBLIC_KEY`          | Public variable (`vars`) | The administrator's Nostr public key                    |
 | `MASTER_ENCRYPTION_KEY`     | Worker secret            | Root key material for encrypting identity keys at rest  |
 | `REMOTE_SIGNER_PRIVATE_KEY` | Worker secret            | Private key of the deployment-wide NIP-46 remote signer |
 
 [`wrangler.jsonc`](wrangler.jsonc) declares all of them, so that
 `wrangler types` generates their types, but holds no real value:
 
-- `vars.ADMIN_PUBKEY` is an empty placeholder that each deployment replaces.
+- `vars.ADMIN_PUBLIC_KEY` is an empty placeholder that each deployment replaces.
 - `secrets.required` lists the two secrets. Their values are set on the Worker,
   and `wrangler deploy` refuses to deploy while either is missing.
 
 | Name                        | Local development | Deployment                      |
 | --------------------------- | ----------------- | ------------------------------- |
-| `ADMIN_PUBKEY`              | `.dev.vars`       | `vars` in your `wrangler.jsonc` |
+| `ADMIN_PUBLIC_KEY`          | `.dev.vars`       | `vars` in your `wrangler.jsonc` |
 | `MASTER_ENCRYPTION_KEY`     | `.dev.vars`       | Worker secret                   |
 | `REMOTE_SIGNER_PRIVATE_KEY` | `.dev.vars`       | Worker secret                   |
 
@@ -79,25 +79,16 @@ While a value is missing or malformed, the requests that need it fail, and
 the HTTP endpoints answer with a server configuration error. The Worker log
 names the value to fix, never the value itself.
 
-### `ADMIN_PUBKEY`
+### `ADMIN_PUBLIC_KEY`
 
-The administrator's Nostr **public** key, as 64 lowercase hexadecimal
-characters. Only this key can sign in to the Admin UI. The landing page and
+The administrator's Nostr **public** key, as either 64 lowercase hexadecimal
+characters or a valid NIP-19 `npub`. Signflare normalizes either form to the same
+hexadecimal key. Only this key can sign in to the Admin UI. The landing page and
 the NIP-11 document show it as the administrative contact.
 
 It is not a private key. The administrator's private key stays in the
 administrator's NIP-07 browser signer: never upload, import, or register it in
 Signflare.
-
-If you only have your `npub`, convert it in a clone of this repository after
-`npm install`:
-
-```sh
-node --input-type=module -e "import { decode } from 'nostr-tools/nip19'; const { type, data } = decode(process.argv[1]); if (type !== 'npub') throw new Error('Expected an npub'); console.log(data)" npub1...
-```
-
-Changing `ADMIN_PUBKEY` ends the Admin UI sessions of the previous
-administrator.
 
 ### `MASTER_ENCRYPTION_KEY`
 
@@ -163,12 +154,12 @@ Then edit `.dev.vars`:
 - Fill in the empty `MASTER_ENCRYPTION_KEY` and `REMOTE_SIGNER_PRIVATE_KEY`
   values with secrets you generate as described in
   [Generate the secrets](#generate-the-secrets).
-- Add a line for `ADMIN_PUBKEY` with the hex public key of your NIP-07 signer.
+- Add a line for `ADMIN_PUBLIC_KEY` with the hex public key or `npub` of your NIP-07 signer.
 
 The result has this shape:
 
 ```dotenv
-ADMIN_PUBKEY=<64 lowercase hex characters>
+ADMIN_PUBLIC_KEY=<64 lowercase hex characters>
 MASTER_ENCRYPTION_KEY=<generated value>
 REMOTE_SIGNER_PRIVATE_KEY=<generated value>
 ```
@@ -182,7 +173,7 @@ npm run dev
 - `http://localhost:5173/` serves the landing page, and the relay at
   `ws://localhost:5173/`.
 - `http://localhost:5173/admin/` serves the Admin UI. Sign in with the NIP-07
-  signer that holds the key of `ADMIN_PUBKEY`.
+  signer that holds the key of `ADMIN_PUBLIC_KEY`.
 
 How the local configuration is read:
 
@@ -190,7 +181,7 @@ How the local configuration is read:
   `.dev.vars.example` is tracked. Never commit your `.dev.vars`.
 - Wrangler and the Cloudflare Vite plugin read `.dev.vars` next to
   `wrangler.jsonc`. Because `wrangler.jsonc` declares `secrets.required`, they
-  read only the names that it declares: the two secrets, and `ADMIN_PUBKEY`,
+  read only the names that it declares: the two secrets, and `ADMIN_PUBLIC_KEY`,
   which overrides the empty placeholder of `vars`. Other names are ignored, and
   a missing secret is reported as `Missing required secrets` when the server
   starts.
@@ -199,7 +190,7 @@ How the local configuration is read:
 - The local Durable Object state is kept under `.wrangler/`, which git
   ignores.
 
-`npm run preview` serves the production build. It takes `ADMIN_PUBKEY` from
+`npm run preview` serves the production build. It takes `ADMIN_PUBLIC_KEY` from
 `wrangler.jsonc` rather than from `.dev.vars`, because the Cloudflare Vite
 plugin carries only the required secrets from `.dev.vars` into the build
 output. Use `npm run dev` to work with the Admin UI locally.
@@ -210,7 +201,7 @@ output. Use `npm run dev` to work with the Admin UI locally.
 
 Open `/admin/` and select **Sign in with Nostr**. Your NIP-07 signer is asked
 to sign a one-time NIP-98 login event (kind 27235) for
-`POST /admin/api/login`. Signflare accepts it only from `ADMIN_PUBKEY` and
+`POST /admin/api/login`. Signflare accepts it only from `ADMIN_PUBLIC_KEY` and
 starts an administrative session: an `HttpOnly`, `Secure`, `SameSite=Strict`
 cookie that expires 12 hours after sign-in, however active the session is.
 **Sign out** ends it earlier.
@@ -261,13 +252,13 @@ The button copies this repository into your GitHub or GitLab account, creates
 the Worker with its Durable Object and static assets, and builds and deploys
 it with Workers Builds. On the setup page:
 
-- Set `ADMIN_PUBKEY` to your hex public key.
+- Set `ADMIN_PUBLIC_KEY` to your hex public key or `npub`.
 - Set `MASTER_ENCRYPTION_KEY` and `REMOTE_SIGNER_PRIVATE_KEY` to secrets you
   generate yourself, as described in
   [Generate the secrets](#generate-the-secrets).
 
 Each later build deploys the `wrangler.jsonc` of your new repository, and its
-`vars.ADMIN_PUBKEY` replaces the deployed value. Make sure that it holds your
+`vars.ADMIN_PUBLIC_KEY` replaces the deployed value. Make sure that it holds your
 public key, and change the administrator there.
 
 ### Deploy with Wrangler
@@ -280,13 +271,13 @@ In a fork or clone of this repository:
    npx wrangler login
    ```
 
-2. Set `vars.ADMIN_PUBKEY` in `wrangler.jsonc` to your hex public key. To keep
+2. Set `vars.ADMIN_PUBLIC_KEY` in `wrangler.jsonc` to your hex public key or `npub`. To keep
    `wrangler.jsonc` unchanged instead, pass
-   `--var ADMIN_PUBKEY:<hex public key>` to every `wrangler deploy`.
+   `--var ADMIN_PUBLIC_KEY:<hex-or-npub>` to every `wrangler deploy`.
 
 3. Write the two secrets to a file outside the repository, for example
    `../signflare-secrets.env`, in the same form as `.dev.vars`. Do not put
-   `ADMIN_PUBKEY` in it: every name in that file is uploaded as a secret.
+   `ADMIN_PUBLIC_KEY` in it: every name in that file is uploaded as a secret.
 
    ```dotenv
    MASTER_ENCRYPTION_KEY=<generated value>
@@ -316,7 +307,7 @@ the build warns `Missing required secrets`: the warning is about the local
 values for `npm run preview`, while `wrangler deploy` checks the secrets of the
 deployed Worker.
 
-`wrangler.jsonc` stays the source of truth for `ADMIN_PUBKEY`: Signflare does
+`wrangler.jsonc` stays the source of truth for `ADMIN_PUBLIC_KEY`: Signflare does
 not set `keep_vars`, so a value changed only in the Cloudflare dashboard is
 replaced on the next deployment. Secrets set in the dashboard or with
 `npx wrangler secret put <NAME>` are kept.
