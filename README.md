@@ -160,8 +160,8 @@ cp .dev.vars.example .dev.vars
 
 Then edit `.dev.vars`:
 
-- Replace the `replace-me` placeholders of `MASTER_ENCRYPTION_KEY` and
-  `REMOTE_SIGNER_PRIVATE_KEY` with values generated as in
+- Fill in the empty `MASTER_ENCRYPTION_KEY` and `REMOTE_SIGNER_PRIVATE_KEY`
+  values with secrets you generate as described in
   [Generate the secrets](#generate-the-secrets).
 - Add a line for `ADMIN_PUBKEY` with the hex public key of your NIP-07 signer.
 
@@ -262,10 +262,9 @@ the Worker with its Durable Object and static assets, and builds and deploys
 it with Workers Builds. On the setup page:
 
 - Set `ADMIN_PUBKEY` to your hex public key.
-- Set `MASTER_ENCRYPTION_KEY` and `REMOTE_SIGNER_PRIVATE_KEY` to values
-  generated as in [Generate the secrets](#generate-the-secrets). The
-  `replace-me` placeholders that `.dev.vars.example` suggests are rejected at
-  runtime.
+- Set `MASTER_ENCRYPTION_KEY` and `REMOTE_SIGNER_PRIVATE_KEY` to secrets you
+  generate yourself, as described in
+  [Generate the secrets](#generate-the-secrets).
 
 Each later build deploys the `wrangler.jsonc` of your new repository, and its
 `vars.ADMIN_PUBKEY` replaces the deployed value. Make sure that it holds your
