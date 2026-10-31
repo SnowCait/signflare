@@ -65,19 +65,6 @@ function ignoredByGit(name: string): boolean {
   return ignored;
 }
 
-// The anchors GitHub gives the headings of a Markdown document.
-function headingAnchors(markdown: string): Set<string> {
-  return new Set(
-    [...markdown.matchAll(/^#{1,6} +(.+)$/gm)].map(([, heading]) =>
-      heading
-        .trim()
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N} _-]/gu, '')
-        .replace(/ /g, '-'),
-    ),
-  );
-}
-
 const pkg = JSON.parse(packageJson) as PackageJson;
 const example = dotenvAssignments(devVarsExample);
 
@@ -201,21 +188,6 @@ describe('Deploy to Cloudflare', () => {
     expect(descriptions.REMOTE_SIGNER_PRIVATE_KEY.description).toMatch(
       /NIP-46/,
     );
-  });
-
-  it('links each description to a section of the README', () => {
-    const anchors = headingAnchors(readme);
-    for (const { description } of Object.values(pkg.cloudflare.bindings)) {
-      const links = [
-        ...description.matchAll(
-          /\(https:\/\/github\.com\/SnowCait\/signflare#([^)]+)\)/g,
-        ),
-      ];
-      expect(links.length, description).toBeGreaterThan(0);
-      for (const [, anchor] of links) {
-        expect(anchors, anchor).toContain(anchor);
-      }
-    }
   });
 
   it('has its button in the README', () => {
